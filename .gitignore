@@ -9,7 +9,7 @@ node_modules/
 *.pem
 *.key
 
-# Claude Code / OAuth credentials (falls lokal gemountet, nie committen)
+# Claude Code / OAuth credentials (if mounted locally, never commit)
 .claude/
 .credentials.json
 
@@ -27,7 +27,7 @@ build/
 # Docker
 *.pid
 
-# Python (falls im Projekt genutzt)
+# Python (if used in the project)
 __pycache__/
 *.pyc
 .venv/

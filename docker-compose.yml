@@ -9,7 +9,7 @@ services:
         required: false
     volumes:
       - .:/workspace
-      # Optional: OAuth-Credentials vom Host wiederverwenden
+      # Optional: reuse OAuth credentials from the host
       # - ${HOME}/.claude:/home/claudecode/.claude
     environment:
       HTTP_PROXY: http://egress-proxy:3128
@@ -42,6 +42,6 @@ services:
 networks:
   internal:
     driver: bridge
-    internal: true   # entscheidend: kein Default-Gateway ins Internet
+    internal: true   # critical: no default gateway to the internet
   external:
     driver: bridge
