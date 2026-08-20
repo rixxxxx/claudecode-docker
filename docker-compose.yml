@@ -1,0 +1,47 @@
+services:
+  claude-code:
+    build: .
+    container_name: claude-code
+    stdin_open: true
+    tty: true
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - .:/workspace
+      # Optional: OAuth-Credentials vom Host wiederverwenden
+      # - ${HOME}/.claude:/home/claudecode/.claude
+    environment:
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    networks:
+      - internal
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    restart: unless-stopped
+
+  egress-proxy:
+    image: ubuntu/squid:latest
+    container_name: claude-code-egress-proxy
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      - internal
+      - external
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "squid", "-k", "check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  internal:
+    driver: bridge
+    internal: true   # entscheidend: kein Default-Gateway ins Internet
+  external:
+    driver: bridge
