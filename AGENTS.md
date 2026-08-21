@@ -11,6 +11,7 @@ Key files:
 
 | File                  | Purpose                                                  |
 |-----------------------|-------------------------------------------------------------|
+| `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
 | `Dockerfile`           | Builds the Claude Code image                                |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, networks       |
 | `squid.conf`           | Domain allowlist for the egress proxy                       |
@@ -54,3 +55,6 @@ docker compose logs egress-proxy | grep TCP_DENIED # see blocked connections
 - Keep documentation in English, consistent with `README.md`.
 - Keep `entrypoint.sh` minimal (terminal setup + `exec "$@"`/shell) —
   don't put business logic there.
+- Keep `bin/cc-container` minimal (resolve project root, `docker compose up
+  -d`, `exec ... claude`) — it's the host-side wrapper, not a place for
+  container-side logic (that belongs in `entrypoint.sh`).
