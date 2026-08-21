@@ -82,6 +82,32 @@ already run there):
       - ${HOME}/.claude:/home/claudecode/.claude
 ```
 
+## RTK (dev-command output compression)
+
+The image installs [RTK](https://github.com/rtk-ai/rtk), a local CLI proxy
+that compresses verbose command output (git, build tools, docker, etc.)
+before it reaches Claude's context window. It runs entirely locally — no
+outbound network access needed at runtime, so no `squid.conf` changes were
+required. Setup happens at build time in `Dockerfile`:
+
+```dockerfile
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
+    && rtk init -g --auto-patch
+```
+
+`rtk init -g` registers a PreToolUse hook in Claude Code's **global**
+config, which lives under `/home/claudecode/.claude`.
+
+**Caveat with persistent login (see "Persistence" above):** if you mount a
+volume over `/home/claudecode/.claude` (either a named volume or your
+host's `~/.claude`), it shadows the config baked into the image — including
+the RTK hook. After the first `docker compose up` with such a mount, run
+once inside the container:
+
+```bash
+rtk init -g --auto-patch
+```
+
 ## Extending the domain allowlist
 
 Add a new domain (e.g. a private registry) to `squid.conf`:

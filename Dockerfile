@@ -50,8 +50,8 @@ WORKDIR /home/claudecode
 RUN mkdir -p /home/claudecode/.npm-global \
     && npm config set prefix '/home/claudecode/.npm-global'
 
-# Add npm global bin to PATH and set terminal defaults
-ENV PATH="/home/claudecode/.npm-global/bin:${PATH}"
+# Add npm global bin + local bin (rtk) to PATH and set terminal defaults
+ENV PATH="/home/claudecode/.npm-global/bin:/home/claudecode/.local/bin:${PATH}"
 ENV TERM=xterm-256color
 ENV COLORTERM=truecolor
 
@@ -62,6 +62,12 @@ ENV XDG_CONFIG_HOME=/home/claudecode/.config
 
 # Install ClaudeCode via npm (more reliable than curl install script)
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install RTK (compresses dev-command output before it reaches the LLM
+# context window) and register its Claude Code PreToolUse hook globally.
+# --auto-patch is RTK's non-interactive install mode (see rtk-ai/rtk docs).
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
+    && rtk init -g --auto-patch
 
 # Create directories for persistent config
 RUN mkdir -p /home/claudecode/.config/claudecode /home/claudecode/.local/share/claudecode
