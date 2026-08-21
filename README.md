@@ -7,12 +7,18 @@ iptables inside the container itself.
 
 ## Architecture
 
-    [claude-code container] ---(internal network, no internet access)---> [egress-proxy]
-                                                                                    |
-                                                                          (external network)
-                                                                                    |
-                                                                                Internet
+    [host]
+    cc-container ---> docker compose up -d ---> [claude-code container] ---(internal network, no internet access)---> [egress-proxy]
+                                                                                                                                |
+                                                                                                                      (external network)
+                                                                                                                                |
+                                                                                                                            Internet
+                        \
+                         `-> docker compose exec claude-code claude   (drops you into the console)
 
+- `cc-container`: the only host-side entry point. Wraps `docker compose up
+  -d` + `docker compose exec claude-code claude` into one command — see
+  "Quickstart" below.
 - `claude-code`: runs as a non-root user (UID 1000) and has no direct
   route to the internet — the route simply doesn't exist at the Docker
   network level.
@@ -24,38 +30,55 @@ iptables inside the container itself.
 
 | File                  | Purpose                                                        |
 |-----------------------|-----------------------------------------------------------------|
+| `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
 | `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via NodeSource, gh CLI) |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, defines networks   |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
-| `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell    |
+| `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell (container PID 1) |
 | `.dockerignore`        | Excludes secrets, node_modules, .git etc. from the build context |
 | `.gitignore`           | Excludes secrets, credentials, build artifacts from the repo   |
 
 ## Setup
 
-1. Create a repo/project folder with these files
-2. Build and start the container:
+1. Clone this repo.
+2. One-time: put `cc-container` on your `PATH`:
 
 ```bash
-   docker compose up -d
+mkdir -p ~/.local/bin
+ln -s "$(pwd)/bin/cc-container" ~/.local/bin/cc-container
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc / ~/.zshrc if missing
 ```
 
-3. Log into the container:
+3. Start the stack and enter the console:
 
 ```bash
-   docker compose exec claude-code bash
+cc-container
 ```
 
-4. Start Claude Code and log in with your Pro/Max subscription:
+This runs `docker compose up -d` (building the image on first run, reusing
+the containers on later runs) and then execs into `claude` inside the
+`claude-code` container — same effect as running steps below manually.
+
+4. First time in, log in with your Pro/Max subscription:
 
 ```bash
-   claude
-   # then: /login
+   /login
 ```
 
    The login link must be opened in the host browser (no browser inside
    the container). The OAuth callback goes through `claude.ai` — this
-   domain is allowed in `squid.conf`.
+   domain is allowed in `squid.conf`. For persistent login across restarts,
+   see "Persistence" below.
+
+<details>
+<summary>Manual steps (what <code>cc-container</code> does under the hood)</summary>
+
+```bash
+docker compose up -d
+docker compose exec claude-code bash   # or: docker compose exec claude-code claude
+```
+
+</details>
 
 ## Persistence
 
