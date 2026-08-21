@@ -66,7 +66,8 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install RTK (compresses dev-command output before it reaches the LLM
 # context window) and register its Claude Code PreToolUse hook globally.
 # --auto-patch is RTK's non-interactive install mode (see rtk-ai/rtk docs).
-RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
+RUN mkdir -p /home/claudecode/.claude \
+    && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
     && rtk init -g --auto-patch
 
 # Create directories for persistent config
