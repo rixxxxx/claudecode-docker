@@ -89,7 +89,7 @@ LATEST_UBUNTU_TAG="$(curl -fsSL "https://hub.docker.com/v2/repositories/library/
 
 NODE_INDEX="$(curl -fsSL "https://nodejs.org/dist/index.json" 2>/dev/null || echo "")"
 LATEST_NODE_MAJOR="$(echo "$NODE_INDEX" | grep -o '"version":"v[0-9]*' | grep -o '[0-9]*' | sort -n | tail -1 || echo "")"
-NODE_LATEST_PATCH="$(echo "$NODE_INDEX" | grep -o "\"version\":\"v${CURRENT_NODE_MAJOR}\.[0-9]*\.[0-9]*\"" | head -1 | grep -o 'v[0-9.]*' || echo "")"
+NODE_LATEST_PATCH="$(echo "$NODE_INDEX" | grep -o "\"version\":\"v${CURRENT_NODE_MAJOR}\.[0-9]*\.[0-9]*\"" | head -1 | grep -o 'v[0-9][0-9.]*' || echo "")"
 
 MAJOR_UPGRADES=""
 if [ -n "$LATEST_UBUNTU_TAG" ] && [ "$LATEST_UBUNTU_TAG" != "$CURRENT_UBUNTU_TAG" ]; then
