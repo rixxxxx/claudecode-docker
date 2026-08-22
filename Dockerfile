@@ -17,6 +17,22 @@ RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
     && mkdir -p -m 755 /etc/apt/sources.list.d \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    ripgrep \
+    build-essential \
+    ca-certificates \
+    fzf \
+    bsdutils \
+    ncurses-base \
+    gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Pinned by bin/update-deps.sh when a newer patch is available.
 ARG NODE_VERSION=24.19.0
 
@@ -33,22 +49,6 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" -o /tmp/node.tar.gz \
     && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.gz
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    python3 \
-    python3-pip \
-    python3-venv \
-    ripgrep \
-    build-essential \
-    ca-certificates \
-    fzf \
-    bsdutils \
-    ncurses-base \
-    gh \
-    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
 RUN userdel -r ubuntu 2>/dev/null || true \
