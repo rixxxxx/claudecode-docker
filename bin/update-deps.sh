@@ -134,6 +134,11 @@ if [ -n "$RTK_LATEST" ] && [ -n "$RTK_CURRENT" ] && [ "$RTK_LATEST" != "$RTK_CUR
     REBUILD_REASONS+=("rtk ${RTK_CURRENT} -> ${RTK_LATEST}")
 fi
 
+if [ -n "$NODE_LATEST_PATCH" ] && [[ ! "$NODE_LATEST_PATCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Warning: unexpected value from nodejs.org/dist/index.json for node ${CURRENT_NODE_MAJOR}.x: '${NODE_LATEST_PATCH}' -- skipping node update check." >&2
+    NODE_LATEST_PATCH=""
+fi
+
 if [ -n "$NODE_LATEST_PATCH" ] && [ -n "$NODE_CURRENT" ] && [ "$NODE_LATEST_PATCH" != "$NODE_CURRENT" ]; then
     REBUILD_REASONS+=("node ${NODE_CURRENT} -> ${NODE_LATEST_PATCH}")
     # Unlike NodeSource's rolling repo, the tarball install is pinned to an
