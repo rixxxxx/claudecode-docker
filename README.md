@@ -31,6 +31,7 @@ iptables inside the container itself.
 | File                  | Purpose                                                        |
 |-----------------------|-----------------------------------------------------------------|
 | `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
+| `bin/update-deps.sh`   | Host-side dependency updater: rebuild + report version changes |
 | `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via NodeSource, gh CLI) |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, defines networks   |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
@@ -130,6 +131,39 @@ once inside the container:
 ```bash
 rtk init -g --auto-patch
 ```
+
+## Updating dependencies
+
+`bin/update-deps.sh` is a host-side script (run it on your host, not inside
+the container) that keeps the image current:
+
+```bash
+bin/update-deps.sh
+```
+
+It automatically, without prompting:
+
+1. Snapshots the currently running tool versions (Ubuntu, Node, gh,
+   `claude-code`, rtk, python3).
+2. Pulls the latest `egress-proxy` image and rebuilds `claude-code` with
+   `docker compose build --pull --no-cache`, picking up the latest apt
+   packages, `gh`, Node patch release (within the pinned `24.x` major),
+   `@anthropic-ai/claude-code` from npm, and `rtk` (installed from its
+   `master` branch).
+3. Recreates the containers and prints a before/after version report.
+
+Available **major** upgrades (a newer Ubuntu release, a newer Node major
+version) are only reported, never applied automatically — bumping
+`FROM ubuntu:26.04` or `setup_24.x` in `Dockerfile` is a deliberate manual
+edit, since it carries real breaking-change risk.
+
+Since builds/pulls go through the host Docker daemon, not through the
+`claude-code` container's network, this doesn't touch `squid.conf` or the
+network isolation. There's no scheduled/automatic run (no cron in the
+container, see "Known limitations") — call it manually when you want fresh
+dependencies. Running it terminates any interactive `claude` session inside
+the container (`--force-recreate`), so run it from the host, not from
+within a `cc-container` session.
 
 ## Extending the domain allowlist
 
