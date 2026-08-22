@@ -145,12 +145,19 @@ It automatically, without prompting:
 
 1. Snapshots the currently running tool versions (Ubuntu, Node, gh,
    `claude-code`, rtk, python3).
-2. Pulls the latest `egress-proxy` image and rebuilds `claude-code` with
-   `docker compose build --pull --no-cache`, picking up the latest apt
-   packages, `gh`, Node patch release (within the pinned `24.x` major),
-   `@anthropic-ai/claude-code` from npm, and `rtk` (installed from its
-   `master` branch).
-3. Recreates the containers and prints a before/after version report.
+2. Checks upstream sources (the `ubuntu` base image layer, the
+   `egress-proxy` image, the latest `gh` release, the latest Node patch
+   within the pinned major, the latest `@anthropic-ai/claude-code` on npm,
+   and the latest `rtk` release) against what's currently installed.
+3. If nothing upstream is newer, it skips the rebuild entirely (just runs
+   `docker compose up -d` to make sure containers are up) and exits —
+   no wasted `--no-cache` rebuild, no disruption to a running `claude`
+   session. Pass `--force` to skip this check and rebuild unconditionally.
+4. If something is newer, it rebuilds `claude-code` with
+   `docker compose build --pull --no-cache` (picking up the latest apt
+   packages, `gh`, Node patch release, `@anthropic-ai/claude-code` from
+   npm, and `rtk`), recreates the containers, and prints a before/after
+   version report.
 
 Available **major** upgrades (a newer Ubuntu release, a newer Node major
 version) are only reported, never applied automatically — bumping
@@ -161,9 +168,9 @@ Since builds/pulls go through the host Docker daemon, not through the
 `claude-code` container's network, this doesn't touch `squid.conf` or the
 network isolation. There's no scheduled/automatic run (no cron in the
 container, see "Known limitations") — call it manually when you want fresh
-dependencies. Running it terminates any interactive `claude` session inside
-the container (`--force-recreate`), so run it from the host, not from
-within a `cc-container` session.
+dependencies. If it does find an update, it terminates any interactive
+`claude` session inside the container (`--force-recreate`), so run it from
+the host, not from within a `cc-container` session.
 
 ## Extending the domain allowlist
 
