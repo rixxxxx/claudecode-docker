@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Starts the Claude Code docker-compose stack (if not already running) and
 # drops you straight into the `claude` console inside the container.
+# Pass --update (optionally followed by --force) to run bin/update-deps.sh
+# first, e.g. `cc-container --update` or `cc-container --update --force`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
+
+if [ "${1:-}" = "--update" ]; then
+    shift
+    "$SCRIPT_DIR/update-deps.sh" "$@"
+fi
 
 docker compose up -d
 

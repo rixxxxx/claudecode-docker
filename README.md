@@ -141,6 +141,15 @@ the container) that keeps the image current:
 bin/update-deps.sh
 ```
 
+Alternatively, run it via `cc-container --update` (add `--force` to skip the
+"anything newer?" check and always rebuild), which runs the updater and then
+starts the stack as usual:
+
+```bash
+cc-container --update
+cc-container --update --force
+```
+
 It automatically, without prompting:
 
 1. Snapshots the currently running tool versions (Ubuntu, Node, gh,
