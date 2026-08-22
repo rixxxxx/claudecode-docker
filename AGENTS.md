@@ -25,7 +25,7 @@ this repo, not incidental config.
 
 - Only add new domains to `squid.conf` when actually needed, with a short
   comment explaining what they're for (see existing blocks: Auth/API,
-  npm, GitHub, NodeSource).
+  npm, GitHub, Node.js).
 - Never propose wildcard grants (`.com`, entire CDNs without reason) or
   `allow all` — that undermines the allowlist model.
 - Don't remove `internal: true` on the `internal` network in

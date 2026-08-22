@@ -32,7 +32,7 @@ iptables inside the container itself.
 |-----------------------|-----------------------------------------------------------------|
 | `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
 | `bin/update-deps.sh`   | Host-side dependency updater: rebuild + report version changes |
-| `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via NodeSource, gh CLI) |
+| `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via official tarball, gh CLI) |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, defines networks   |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
 | `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell (container PID 1) |
@@ -161,8 +161,12 @@ It automatically, without prompting:
 
 Available **major** upgrades (a newer Ubuntu release, a newer Node major
 version) are only reported, never applied automatically — bumping
-`FROM ubuntu:26.04` or `setup_24.x` in `Dockerfile` is a deliberate manual
-edit, since it carries real breaking-change risk.
+`FROM ubuntu:26.04` or the major in `ARG NODE_VERSION` in `Dockerfile` is a
+deliberate manual edit, since it carries real breaking-change risk. Patch/minor
+Node bumps within the pinned major *are* applied automatically: the script
+rewrites `ARG NODE_VERSION` in-place before the `--no-cache` rebuild, since
+the tarball install is pinned to an exact version rather than NodeSource's
+rolling per-major repo.
 
 Since builds/pulls go through the host Docker daemon, not through the
 `claude-code` container's network, this doesn't touch `squid.conf` or the

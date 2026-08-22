@@ -17,9 +17,22 @@ RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
     && mkdir -p -m 755 /etc/apt/sources.list.d \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Pinned by bin/update-deps.sh when a newer patch is available.
+ARG NODE_VERSION=24.19.0
+
+# Install Node.js from the official upstream tarball instead of NodeSource +
+# apt: NodeSource's per-release repos can lag behind brand-new Ubuntu
+# releases, silently falling back to Ubuntu's own 'nodejs' package - which,
+# unlike NodeSource's, does not bundle npm.
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+         amd64) NODE_ARCH=x64 ;; \
+         arm64) NODE_ARCH=arm64 ;; \
+         *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" -o /tmp/node.tar.gz \
+    && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.gz
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \

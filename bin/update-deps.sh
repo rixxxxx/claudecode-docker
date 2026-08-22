@@ -72,7 +72,8 @@ echo "==> Capturing current versions..."
 BEFORE="$(snapshot_versions)"
 
 CURRENT_UBUNTU_TAG="$(grep -m1 '^FROM ubuntu:' Dockerfile | cut -d: -f2)"
-CURRENT_NODE_MAJOR="$(grep -m1 'setup_[0-9]*\.x' Dockerfile | grep -o 'setup_[0-9]*\.x' | grep -o '[0-9]*')"
+CURRENT_NODE_VERSION="$(grep -m1 '^ARG NODE_VERSION=' Dockerfile | cut -d= -f2)"
+CURRENT_NODE_MAJOR="$(echo "$CURRENT_NODE_VERSION" | cut -d. -f1)"
 
 GH_CURRENT="$(first_semver "$(ver_of "$BEFORE" gh)")"
 NPM_CURRENT="$(first_semver "$(ver_of "$BEFORE" claude-code)")"
@@ -95,7 +96,7 @@ if [ -n "$LATEST_UBUNTU_TAG" ] && [ "$LATEST_UBUNTU_TAG" != "$CURRENT_UBUNTU_TAG
     MAJOR_UPGRADES+="  - Ubuntu base image: ${CURRENT_UBUNTU_TAG} -> ${LATEST_UBUNTU_TAG} available (Dockerfile line 1: 'FROM ubuntu:${CURRENT_UBUNTU_TAG}')\n"
 fi
 if [ -n "$LATEST_NODE_MAJOR" ] && [ "$LATEST_NODE_MAJOR" != "$CURRENT_NODE_MAJOR" ]; then
-    MAJOR_UPGRADES+="  - Node.js major: ${CURRENT_NODE_MAJOR}.x -> ${LATEST_NODE_MAJOR}.x available (Dockerfile: 'setup_${CURRENT_NODE_MAJOR}.x')\n"
+    MAJOR_UPGRADES+="  - Node.js major: ${CURRENT_NODE_MAJOR}.x -> ${LATEST_NODE_MAJOR}.x available (Dockerfile: 'ARG NODE_VERSION=${CURRENT_NODE_VERSION}')\n"
 fi
 
 # --- 3. check whether a rebuild is actually necessary -------------------
@@ -135,6 +136,10 @@ fi
 
 if [ -n "$NODE_LATEST_PATCH" ] && [ -n "$NODE_CURRENT" ] && [ "$NODE_LATEST_PATCH" != "$NODE_CURRENT" ]; then
     REBUILD_REASONS+=("node ${NODE_CURRENT} -> ${NODE_LATEST_PATCH}")
+    # Unlike NodeSource's rolling repo, the tarball install is pinned to an
+    # exact version -- bump it here so the upcoming --no-cache build actually
+    # picks up the newer patch instead of just re-fetching the same one.
+    sed -i "s/^ARG NODE_VERSION=.*/ARG NODE_VERSION=${NODE_LATEST_PATCH#v}/" Dockerfile
 fi
 
 if [ "$FORCE" = true ]; then
