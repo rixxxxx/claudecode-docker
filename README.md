@@ -51,6 +51,16 @@ iptables inside the container itself.
   <project-name> down` using the project name printed at startup (since
   containers no longer have a single fixed name to `docker stop` by).
 
+`HTTP_PROXY=http://egress-proxy:3128` inside `claude-code` still works
+unchanged across all of this: `egress-proxy` is the Compose *service*
+name, resolved via Docker's embedded DNS *within each project's own
+isolated network* — so it always resolves to that workspace's own
+dedicated proxy, never to another instance's. (Squid's
+`visible_hostname egress-proxy` in `squid.conf` is unrelated to this —
+it's just a static label Squid puts in its own `Via` header/error pages,
+identical across every instance, with no DNS or networking behavior
+behind it.)
+
 ## Files
 
 | File                  | Purpose                                                        |

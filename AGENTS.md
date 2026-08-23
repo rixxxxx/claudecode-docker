@@ -85,3 +85,12 @@ depends on:
   (project-relative), never via a literal hardcoded container name —
   `bin/update-deps.sh`'s `egress_proxy_digest()` was fixed to follow this
   pattern; keep new code consistent with it.
+
+`egress-proxy` in `HTTP_PROXY`/`HTTPS_PROXY` (`docker-compose.yml`) is the
+Compose *service* name, resolved via Docker's embedded DNS scoped to each
+project's own `internal` network — it correctly resolves to a different,
+dedicated proxy container per workspace without any extra code. Don't
+confuse this with `squid.conf`'s `visible_hostname egress-proxy`, which is
+just a static label in Squid's own `Via` header/error pages (identical
+across every instance, no DNS/networking behavior) — no need to make it
+"unique per instance".
