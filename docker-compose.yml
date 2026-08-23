@@ -1,7 +1,7 @@
 services:
   claude-code:
     build: .
-    container_name: claude-code
+    image: claude-code:latest
     stdin_open: true
     tty: true
     env_file:
@@ -25,7 +25,6 @@ services:
 
   egress-proxy:
     image: ubuntu/squid:latest
-    container_name: claude-code-egress-proxy
     volumes:
       - ./squid.conf:/etc/squid/squid.conf:ro
     networks:

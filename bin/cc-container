@@ -8,7 +8,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-export HOST_WORKSPACE="$(pwd)"
+export HOST_WORKSPACE="$(pwd -P)"
+
+# Derive a stable, unique Compose project name from the workspace path so
+# each distinct host workspace gets its own containers, networks, and
+# dedicated egress-proxy (true parallelism), while repeated runs from the
+# same workspace reuse the same project instead of piling up duplicates.
+# The literal "cc-" prefix guarantees the result always starts with an
+# alnum char, satisfying Compose's ^[a-z0-9][a-z0-9_-]*$ project-name rule
+# even if the slug below ends up empty.
+_ws_slug="$(basename "$HOST_WORKSPACE" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-32)"
+_ws_hash="$(printf '%s' "$HOST_WORKSPACE" | cksum | cut -d' ' -f1)"
+export COMPOSE_PROJECT_NAME="cc-${_ws_slug:-ws}-${_ws_hash}"
+unset _ws_slug _ws_hash
+
+echo "==> Workspace:       $HOST_WORKSPACE"
+echo "==> Compose project: $COMPOSE_PROJECT_NAME"
 
 cd "$PROJECT_ROOT"
 

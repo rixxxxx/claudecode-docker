@@ -30,6 +30,27 @@ iptables inside the container itself.
   egress path. Filters by domain (SNI), not IP — robust against
   rotating CDN IPs.
 
+### Multiple instances
+
+`cc-container` derives a `COMPOSE_PROJECT_NAME` from the workspace path
+(a sanitized directory-name slug plus a hash of the full path, e.g.
+`cc-myproject-1234567890`) and prints it on startup. This means:
+
+- Running `cc-container` from two different host workspaces starts two
+  fully independent stacks — each gets its own `claude-code` container,
+  its own **dedicated `egress-proxy`**, and its own isolated
+  `internal`/`external` networks. Sessions don't interfere with each
+  other.
+- Running `cc-container` again from the *same* workspace reuses that
+  workspace's existing containers instead of creating duplicates.
+- The `claude-code` image itself (`claude-code:latest`) is still built
+  and shared once across all instances — only the containers are
+  per-workspace, not the image.
+- To tear down one workspace's stack specifically: `docker compose down`
+  from that same workspace directory, or `docker compose -p
+  <project-name> down` using the project name printed at startup (since
+  containers no longer have a single fixed name to `docker stop` by).
+
 ## Files
 
 | File                  | Purpose                                                        |
@@ -81,8 +102,9 @@ the containers on later runs) and then execs into `claude` inside the
 <summary>Manual steps (what <code>cc-container</code> does under the hood)</summary>
 
 ```bash
-export HOST_WORKSPACE="$(pwd)"   # directory to mount as /workspace
-cd /path/to/this/repo            # docker-compose.yml lives here
+export HOST_WORKSPACE="$(pwd)"              # directory to mount as /workspace
+export COMPOSE_PROJECT_NAME="cc-myproject"  # optional: omit to use Compose's default project
+cd /path/to/this/repo                       # docker-compose.yml lives here
 docker compose up -d
 docker compose exec claude-code bash   # or: docker compose exec claude-code claude
 ```
@@ -113,6 +135,14 @@ already run there):
     volumes:
       - ${HOME}/.claude:/home/claudecode/.claude
 ```
+
+**Note on multiple instances:** a named volume like `claude-config` above
+is scoped to the Compose project, and each workspace now runs as its own
+project (see "Multiple instances") — so every workspace would get its
+own separate login/config, requiring `/login` again in each. The host
+bind-mount alternative (`${HOME}/.claude:/home/claudecode/.claude`) isn't
+project-scoped and is shared across all workspaces automatically; use
+that if you want one login for every instance.
 
 ## RTK (dev-command output compression)
 
@@ -193,6 +223,14 @@ dependencies. If it does find an update, it terminates any interactive
 `claude` session inside the container (`--force-recreate`), so run it from
 the host, not from within a `cc-container` session.
 
+Run via `cc-container --update`, it targets that specific workspace's
+instance (recreating only its containers). Run standalone
+(`bin/update-deps.sh` directly, without `HOST_WORKSPACE`/
+`COMPOSE_PROJECT_NAME` set), it prints a note and falls back to Compose's
+default project — the shared `claude-code:latest` image still gets
+rebuilt correctly either way; other running instances just pick it up on
+their next recreate rather than immediately.
+
 ## Extending the domain allowlist
 
 Add a new domain (e.g. a private registry) to `squid.conf`:
@@ -229,6 +267,16 @@ docker compose exec claude-code nslookup api.anthropic.com
   container via an allowed domain. Only use with trusted repositories.
 - New Anthropic domains (e.g. from feature updates) aren't detected
   automatically — `squid.conf` must be maintained manually.
+- Stale per-workspace Docker projects aren't cleaned up automatically —
+  if a workspace directory is later moved or deleted, its containers,
+  networks, and (if configured) named volumes stick around until torn
+  down manually with `docker compose -p <project-name> down`. There's no
+  `cc-container --down` or "list all instances" helper yet.
+- Running `cc-container --update` from two workspaces at the same time
+  isn't guarded against — both would race to rebuild/retag the same
+  shared `claude-code:latest` image. Harmless, but their before/after
+  version reports can interleave; avoid updating from two terminals at
+  once.
 
 ## Security model comparison
 

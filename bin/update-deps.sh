@@ -14,6 +14,13 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
+    echo "Note: not invoked via 'cc-container --update' — operating on Compose's" >&2
+    echo "      default project ($(basename "$PROJECT_ROOT")), not a specific workspace." >&2
+    echo "      The shared claude-code:latest image is still rebuilt correctly;" >&2
+    echo "      other running cc-container instances pick it up on their next recreate." >&2
+fi
+
 FORCE=false
 for arg in "$@"; do
     case "$arg" in
@@ -50,7 +57,9 @@ snapshot_versions() {
 }
 
 egress_proxy_digest() {
-    docker inspect --format='{{.Image}}' claude-code-egress-proxy 2>/dev/null || echo "n/a"
+    local cid
+    cid="$(docker compose ps -q egress-proxy 2>/dev/null)"
+    [ -n "$cid" ] && docker inspect --format='{{.Image}}' "$cid" 2>/dev/null || echo "n/a"
 }
 
 image_id() {
