@@ -22,6 +22,10 @@ iptables inside the container itself.
 - `claude-code`: runs as a non-root user (UID 1000) and has no direct
   route to the internet — the route simply doesn't exist at the Docker
   network level.
+- `/workspace` inside the container is bind-mounted from the host
+  directory `cc-container` was invoked from (via `HOST_WORKSPACE`, set to
+  `$(pwd)`) — run it from the project you want Claude Code to work on,
+  not necessarily from inside this repo.
 - `egress-proxy`: Squid with a domain allowlist, the only permitted
   egress path. Filters by domain (SNI), not IP — robust against
   rotating CDN IPs.
@@ -50,13 +54,15 @@ ln -s "$(pwd)/bin/cc-container" ~/.local/bin/cc-container
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc / ~/.zshrc if missing
 ```
 
-3. Start the stack and enter the console:
+3. From the project directory you want Claude Code to work on, start the
+   stack and enter the console:
 
 ```bash
 cc-container
 ```
 
-This runs `docker compose up -d` (building the image on first run, reusing
+This mounts your current directory into the container as `/workspace`,
+runs `docker compose up -d` (building the image on first run, reusing
 the containers on later runs) and then execs into `claude` inside the
 `claude-code` container — same effect as running steps below manually.
 
@@ -75,6 +81,8 @@ the containers on later runs) and then execs into `claude` inside the
 <summary>Manual steps (what <code>cc-container</code> does under the hood)</summary>
 
 ```bash
+export HOST_WORKSPACE="$(pwd)"   # directory to mount as /workspace
+cd /path/to/this/repo            # docker-compose.yml lives here
 docker compose up -d
 docker compose exec claude-code bash   # or: docker compose exec claude-code claude
 ```
@@ -91,7 +99,7 @@ add this to `docker-compose.yml`:
 services:
   claude-code:
     volumes:
-      - .:/workspace
+      - ${HOST_WORKSPACE:-.}:/workspace
       - claude-config:/home/claudecode/.claude
 
 volumes:

@@ -11,7 +11,8 @@ Key files:
 
 | File                  | Purpose                                                  |
 |-----------------------|-------------------------------------------------------------|
-| `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
+| `bin/cc-container`     | Host-side entry point: mounts the invoking directory as `/workspace` (`HOST_WORKSPACE`), `docker compose up -d` + exec into `claude` |
+| `bin/update-deps.sh`   | Host-side dependency updater, invoked via `cc-container --update` |
 | `Dockerfile`           | Builds the Claude Code image                                |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, networks       |
 | `squid.conf`           | Domain allowlist for the egress proxy                       |
