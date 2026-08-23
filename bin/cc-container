@@ -8,6 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+export HOST_WORKSPACE="$(pwd)"
+
 cd "$PROJECT_ROOT"
 
 if [ "${1:-}" = "--update" ]; then
