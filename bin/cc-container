@@ -37,4 +37,22 @@ fi
 
 docker compose up -d
 
-exec docker compose exec claude-code claude
+set +e
+docker compose exec claude-code claude
+claude_status=$?
+set -e
+
+if [ -t 0 ]; then
+    read -r -p "Close containers for this workspace (claude-code + egress-proxy)? [y/N] " reply
+    case "$reply" in
+        y|Y|yes|Yes)
+            echo "==> Stopping and removing containers..."
+            docker compose down
+            ;;
+        *)
+            echo "==> Leaving containers running. Stop them later with: docker compose down"
+            ;;
+    esac
+fi
+
+exit "$claude_status"

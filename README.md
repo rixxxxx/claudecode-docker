@@ -18,7 +18,9 @@ iptables inside the container itself.
 
 - `cc-container`: the only host-side entry point. Wraps `docker compose up
   -d` + `docker compose exec claude-code claude` into one command — see
-  "Quickstart" below.
+  "Quickstart" below. When the `claude` session ends (`/exit`, Ctrl+D,
+  Ctrl+C, or a crash), it asks whether to close the containers for this
+  workspace (`docker compose down`); pressing Enter leaves them running.
 - `claude-code`: runs as a non-root user (UID 1000) and has no direct
   route to the internet — the route simply doesn't exist at the Docker
   network level.
@@ -46,10 +48,11 @@ iptables inside the container itself.
 - The `claude-code` image itself (`claude-code:latest`) is still built
   and shared once across all instances — only the containers are
   per-workspace, not the image.
-- To tear down one workspace's stack specifically: `docker compose down`
-  from that same workspace directory, or `docker compose -p
-  <project-name> down` using the project name printed at startup (since
-  containers no longer have a single fixed name to `docker stop` by).
+- To tear down one workspace's stack: answer "y" to the prompt `cc-container`
+  shows when the `claude` session ends, or run `docker compose down` from
+  that same workspace directory, or `docker compose -p <project-name> down`
+  using the project name printed at startup (since containers no longer
+  have a single fixed name to `docker stop` by).
 
 `HTTP_PROXY=http://egress-proxy:3128` inside `claude-code` still works
 unchanged across all of this: `egress-proxy` is the Compose *service*
@@ -280,8 +283,10 @@ docker compose exec claude-code nslookup api.anthropic.com
 - Stale per-workspace Docker projects aren't cleaned up automatically —
   if a workspace directory is later moved or deleted, its containers,
   networks, and (if configured) named volumes stick around until torn
-  down manually with `docker compose -p <project-name> down`. There's no
-  `cc-container --down` or "list all instances" helper yet.
+  down manually with `docker compose -p <project-name> down`.
+  `cc-container` only offers to close the containers for the workspace
+  it was just run from (when the `claude` session ends); there's still no
+  "list/close all instances" helper for workspaces you're not currently in.
 - Running `cc-container --update` from two workspaces at the same time
   isn't guarded against — both would race to rebuild/retag the same
   shared `claude-code:latest` image. Harmless, but their before/after

@@ -59,9 +59,13 @@ docker compose logs egress-proxy | grep TCP_DENIED # see blocked connections
 - Keep `bin/cc-container` minimal (resolve project root, export
   `HOST_WORKSPACE`/`COMPOSE_PROJECT_NAME` for the per-workspace bind mount
   and Compose project, optionally delegate to `update-deps.sh` on
-  `--update`, `docker compose up -d`, `exec ... claude`) — it's the
-  host-side wrapper, not a place for container-side logic (that belongs
-  in `entrypoint.sh`).
+  `--update`, `docker compose up -d`, `exec ... claude`, then — once the
+  `claude` session ends — prompt whether to `docker compose down` this
+  workspace's containers) — it's the host-side wrapper, not a place for
+  container-side logic (that belongs in `entrypoint.sh`). The exit prompt
+  is intentionally host-side only: `claude-code` has no Docker
+  socket/CLI, so a hook running inside the container could never actually
+  stop the containers itself.
 
 ## Multi-instance invariants — don't break these
 
