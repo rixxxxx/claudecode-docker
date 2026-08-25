@@ -82,7 +82,7 @@ image_id() {
 
 ver_of() {
     # $1 = version blob (BEFORE), $2 = key
-    echo "$1" | grep "^${2}=" | cut -d= -f2-
+    echo "$1" | grep "^${2}=" | cut -d= -f2- || echo "n/a"
 }
 
 first_semver() {
@@ -217,7 +217,7 @@ echo ""
 echo "================ Update report ================"
 printf "%-14s %-30s %-30s\n" "TOOL" "BEFORE" "AFTER"
 while IFS='=' read -r key before_val; do
-    after_val="$(echo "$AFTER" | grep "^${key}=" | cut -d= -f2-)"
+    after_val="$(echo "$AFTER" | grep "^${key}=" | cut -d= -f2- || echo "n/a")"
     printf "%-14s %-30s %-30s\n" "$key" "$before_val" "$after_val"
 done <<< "$BEFORE"
 printf "%-14s %-30s %-30s\n" "egress-proxy" "$EGRESS_BEFORE" "$EGRESS_AFTER"
