@@ -36,24 +36,38 @@ container_running() {
         && [ "$(docker inspect -f '{{.State.Running}}' "$(docker compose ps -q claude-code)" 2>/dev/null)" = "true" ]
 }
 
-run_in_container() {
-    # $1 = shell snippet, run via a running container if possible, else a
-    # throwaway one-off container.
-    if container_running; then
-        docker compose exec -T claude-code bash -lc "$1" 2>/dev/null || echo "n/a"
-    else
-        docker compose run --rm -T claude-code bash -lc "$1" 2>/dev/null || echo "n/a"
-    fi
-}
+# Keys snapshot_versions emits, in order -- used to build the combined
+# in-container probe and to backfill "n/a" for any key missing entirely
+# (e.g. the whole docker invocation failed, not just one command inside it).
+SNAPSHOT_KEYS=(ubuntu node npm gh claude-code rtk python3)
 
 snapshot_versions() {
-    echo "ubuntu=$(run_in_container '. /etc/os-release && echo $VERSION_ID')"
-    echo "node=$(run_in_container 'node --version')"
-    echo "npm=$(run_in_container 'npm --version')"
-    echo "gh=$(run_in_container 'gh --version | head -1')"
-    echo "claude-code=$(run_in_container 'claude --version')"
-    echo "rtk=$(run_in_container 'rtk --version')"
-    echo "python3=$(run_in_container 'python3 --version')"
+    # One combined in-container probe instead of one `docker compose
+    # run`/`exec` per tool -- avoids spinning up a throwaway container per
+    # check (and paying the egress-proxy healthcheck wait each time) when
+    # claude-code isn't already running.
+    local probe out key
+    probe='
+v="$(. /etc/os-release && echo "$VERSION_ID" 2>/dev/null)"; printf "ubuntu=%s\n" "${v:-n/a}"
+v="$(node --version 2>/dev/null)"; printf "node=%s\n" "${v:-n/a}"
+v="$(npm --version 2>/dev/null)"; printf "npm=%s\n" "${v:-n/a}"
+v="$(gh --version 2>/dev/null | head -1)"; printf "gh=%s\n" "${v:-n/a}"
+v="$(claude --version 2>/dev/null)"; printf "claude-code=%s\n" "${v:-n/a}"
+v="$(rtk --version 2>/dev/null)"; printf "rtk=%s\n" "${v:-n/a}"
+v="$(python3 --version 2>/dev/null)"; printf "python3=%s\n" "${v:-n/a}"
+'
+    if container_running; then
+        out="$(docker compose exec -T claude-code bash -lc "$probe" 2>/dev/null)" || out=""
+    else
+        echo "==> No running claude-code container -- starting a temporary one to read versions" >&2
+        echo "    (first run may pause a few seconds while egress-proxy's healthcheck passes)..." >&2
+        out="$(docker compose run --rm -T claude-code bash -lc "$probe" 2>/dev/null)" || out=""
+    fi
+
+    for key in "${SNAPSHOT_KEYS[@]}"; do
+        grep -q "^${key}=" <<<"$out" || out+=$'\n'"${key}=n/a"
+    done
+    echo "$out"
 }
 
 egress_proxy_digest() {
