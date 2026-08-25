@@ -1,6 +1,13 @@
 #!/bin/bash
 # Claude Code Docker — Entrypoint
 
+# Re-link statusline.py from the live /workspace mount on every start, so
+# edits committed to the repo take effect without an image rebuild (the
+# Dockerfile's COPY only captures the file at build time).
+if [ -f /workspace/statusline.py ]; then
+    ln -sf /workspace/statusline.py /home/claudecode/.claude/statusline.py
+fi
+
 # Fix terminal settings for TUI apps
 if [ -t 0 ] && [ -t 1 ]; then
     stty sane 2>/dev/null || true
