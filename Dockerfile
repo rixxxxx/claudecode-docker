@@ -104,8 +104,8 @@ RUN mkdir -p /home/claudecode/.claude \
 # from Claude Code's statusLine stdin payload). Merged into the settings.json
 # rtk init already created above, so its PreToolUse hook is preserved.
 COPY --chown=claudecode:claudecode statusline.py /home/claudecode/.claude/statusline.py
-RUN chmod +x /home/claudecode/.claude/statusline.py \
-    && python3 -c "
+RUN chmod +x /home/claudecode/.claude/statusline.py
+RUN python3 <<'EOF'
 import json
 p = '/home/claudecode/.claude/settings.json'
 with open(p) as f:
@@ -113,7 +113,7 @@ with open(p) as f:
 s['statusLine'] = {'type': 'command', 'command': 'python3 /home/claudecode/.claude/statusline.py'}
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
-"
+EOF
 
 # Create directories for persistent config
 RUN mkdir -p /home/claudecode/.config/claudecode /home/claudecode/.local/share/claudecode
