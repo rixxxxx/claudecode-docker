@@ -12,8 +12,8 @@ LABEL version="1.0"
 # the image is always tagged claude-code:latest regardless of which build it is.
 ARG CLAUDE_CODE_VERSION=unknown
 ARG BUILD_DATE=unknown
-LABEL org.opencontainers.image.version="${CLAUDE_CODE_VERSION}"
-LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL dev.claudecode-docker.version="${CLAUDE_CODE_VERSION}"
+LABEL dev.claudecode-docker.build-date="${BUILD_DATE}"
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive

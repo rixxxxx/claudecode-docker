@@ -248,11 +248,13 @@ Because every workspace shares the single `claude-code:latest` tag,
 `docker ps` alone can't tell you whether a still-running container (from a
 workspace nobody has recreated in a while) is behind the latest build.
 `update-deps.sh` stamps each build with the `claude-code` version it
-installed and the build timestamp as OCI image labels, so you can check
-without shelling in:
+installed and the build timestamp as custom image labels (kept out of the
+`org.opencontainers.image.*` namespace so they don't clobber the base
+image's own `version`/`created` labels), so you can check without
+shelling in:
 
 ```bash
-docker ps --format 'table {{.Names}}\t{{.Label "org.opencontainers.image.version"}}\t{{.Label "org.opencontainers.image.created"}}'
+docker ps --format 'table {{.Names}}\t{{.Label "dev.claudecode-docker.version"}}\t{{.Label "dev.claudecode-docker.build-date"}}'
 ```
 
 ## Extending the domain allowlist
