@@ -100,6 +100,21 @@ RUN mkdir -p /home/claudecode/.claude \
     && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
     && rtk init -g --auto-patch
 
+# Statusline showing live context-window usage (context_window.used_percentage
+# from Claude Code's statusLine stdin payload). Merged into the settings.json
+# rtk init already created above, so its PreToolUse hook is preserved.
+COPY --chown=claudecode:claudecode statusline.py /home/claudecode/.claude/statusline.py
+RUN chmod +x /home/claudecode/.claude/statusline.py \
+    && python3 -c "
+import json
+p = '/home/claudecode/.claude/settings.json'
+with open(p) as f:
+    s = json.load(f)
+s['statusLine'] = {'type': 'command', 'command': 'python3 /home/claudecode/.claude/statusline.py'}
+with open(p, 'w') as f:
+    json.dump(s, f, indent=2)
+"
+
 # Create directories for persistent config
 RUN mkdir -p /home/claudecode/.config/claudecode /home/claudecode/.local/share/claudecode
 
