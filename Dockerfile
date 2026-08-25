@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM ubuntu:26.04
 
 # Metadata
@@ -9,7 +11,13 @@ LABEL version="1.0"
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Setup gh cli
-RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
+# Cache mounts persist downloaded .debs/lists across bin/update-deps.sh's
+# --no-cache rebuilds (which bypass the regular layer cache on purpose to
+# re-check upstream apt versions), so a rebuild triggered by e.g. only a
+# claude-code npm bump doesn't have to re-download unchanged packages.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    (type -p wget >/dev/null || (apt update && apt install wget -y)) \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -18,7 +26,10 @@ RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
 # Install dependencies
-RUN apt-get update && apt-get install -y \
+# See cache mount note on the gh-cli step above.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     curl \
     git \
     python3 \
@@ -30,8 +41,7 @@ RUN apt-get update && apt-get install -y \
     fzf \
     bsdutils \
     ncurses-base \
-    gh \
-    && rm -rf /var/lib/apt/lists/*
+    gh
 
 # Pinned by bin/update-deps.sh when a newer patch is available.
 ARG NODE_VERSION=24.19.0
