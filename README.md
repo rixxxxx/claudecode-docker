@@ -244,6 +244,17 @@ default project — the shared `claude-code:latest` image still gets
 rebuilt correctly either way; other running instances just pick it up on
 their next recreate rather than immediately.
 
+Because every workspace shares the single `claude-code:latest` tag,
+`docker ps` alone can't tell you whether a still-running container (from a
+workspace nobody has recreated in a while) is behind the latest build.
+`update-deps.sh` stamps each build with the `claude-code` version it
+installed and the build timestamp as OCI image labels, so you can check
+without shelling in:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Label "org.opencontainers.image.version"}}\t{{.Label "org.opencontainers.image.created"}}'
+```
+
 ## Extending the domain allowlist
 
 Add a new domain (e.g. a private registry) to `squid.conf`:

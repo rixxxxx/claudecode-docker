@@ -7,6 +7,14 @@ LABEL maintainer="claudecode-docker"
 LABEL description="Isolated Docker environment for ClaudeCode"
 LABEL version="1.0"
 
+# Set by bin/update-deps.sh at build time so a running container's build can
+# be identified via 'docker ps --format ...' without shelling into it, since
+# the image is always tagged claude-code:latest regardless of which build it is.
+ARG CLAUDE_CODE_VERSION=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.version="${CLAUDE_CODE_VERSION}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 

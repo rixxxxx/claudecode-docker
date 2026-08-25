@@ -1,6 +1,10 @@
 services:
   claude-code:
-    build: .
+    build:
+      context: .
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     image: claude-code:latest
     stdin_open: true
     tty: true

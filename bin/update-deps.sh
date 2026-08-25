@@ -198,6 +198,8 @@ echo ""
 # --- 4. apply updates ----------------------------------------------------
 
 echo "==> Rebuilding claude-code image (--pull --no-cache)..."
+export CLAUDE_CODE_VERSION="${NPM_LATEST:-${NPM_CURRENT:-unknown}}"
+export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker compose build --pull --no-cache
 
 echo "==> Recreating containers..."
