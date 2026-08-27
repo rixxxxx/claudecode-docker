@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     gh
 
 # Pinned by bin/update-deps.sh when a newer patch is available.
-ARG NODE_VERSION=24.19.0
+ARG NODE_VERSION=24.20.0
 
 # Install Node.js from the official upstream tarball instead of NodeSource +
 # apt: NodeSource's per-release repos can lag behind brand-new Ubuntu
