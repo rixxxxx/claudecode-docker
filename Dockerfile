@@ -7,22 +7,15 @@ LABEL maintainer="claudecode-docker"
 LABEL description="Isolated Docker environment for ClaudeCode"
 LABEL version="1.0"
 
-# Set by bin/update-deps.sh at build time so a running container's build can
-# be identified via 'docker ps --format ...' without shelling into it, since
-# the image is always tagged claude-code:latest regardless of which build it is.
-ARG CLAUDE_CODE_VERSION=unknown
-ARG BUILD_DATE=unknown
-LABEL dev.claudecode-docker.version="${CLAUDE_CODE_VERSION}"
-LABEL dev.claudecode-docker.build-date="${BUILD_DATE}"
-
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Setup gh cli
 # Cache mounts persist downloaded .debs/lists across bin/update-deps.sh's
 # --no-cache rebuilds (which bypass the regular layer cache on purpose to
-# re-check upstream apt versions), so a rebuild triggered by e.g. only a
-# claude-code npm bump doesn't have to re-download unchanged packages.
+# re-check upstream apt versions, e.g. for a gh or rtk bump -- see
+# update-deps.sh), so those rebuilds don't have to re-download unchanged
+# packages just to re-verify them.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     (type -p wget >/dev/null || (apt update && apt install wget -y)) \
@@ -90,8 +83,14 @@ ENV COLORTERM=truecolor
 ENV XDG_DATA_HOME=/home/claudecode/.local/share
 ENV XDG_CONFIG_HOME=/home/claudecode/.config
 
+# Pinned by bin/update-deps.sh when a newer npm release is available. Declared
+# here rather than at the top of the file so bumping it only invalidates this
+# layer and everything below -- not the apt/Node layers above -- mirroring the
+# NODE_VERSION pattern above.
+ARG CLAUDE_CODE_VERSION=latest
+
 # Install ClaudeCode via npm (more reliable than curl install script)
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Install RTK (compresses dev-command output before it reaches the LLM
 # context window) and register its Claude Code PreToolUse hook globally.
@@ -123,5 +122,14 @@ COPY entrypoint.sh /home/claudecode/entrypoint.sh
 
 # Set working directory
 WORKDIR /workspace
+
+# Declared/used this late (not at the top) so BUILD_DATE -- which changes on
+# every single build -- doesn't cascade-invalidate the cache for every layer
+# above it. Stamped by bin/update-deps.sh so a running container's build can
+# be identified via 'docker ps --format ...' without shelling into it, since
+# the image is always tagged claude-code:latest regardless of which build it is.
+ARG BUILD_DATE=unknown
+LABEL dev.claudecode-docker.version="${CLAUDE_CODE_VERSION}"
+LABEL dev.claudecode-docker.build-date="${BUILD_DATE}"
 
 ENTRYPOINT ["/home/claudecode/entrypoint.sh"]

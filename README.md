@@ -213,11 +213,18 @@ It automatically, without prompting:
    `docker compose up -d` to make sure containers are up) and exits —
    no wasted `--no-cache` rebuild, no disruption to a running `claude`
    session. Pass `--force` to skip this check and rebuild unconditionally.
-4. If something is newer, it rebuilds `claude-code` with
-   `docker compose build --pull --no-cache` (picking up the latest apt
-   packages, `gh`, Node patch release, `@anthropic-ai/claude-code` from
-   npm, and `rtk`), recreates the containers, and prints a before/after
-   version report.
+4. If something is newer, it rebuilds `claude-code` and recreates the
+   containers, then prints a before/after version report. `@anthropic-ai/claude-code`
+   and Node are pinned via Dockerfile `ARG`s that `update-deps.sh` rewrites in
+   place, so if a bump to either of those is the *only* thing that changed,
+   the rebuild uses a plain `docker compose build --pull` — Docker's normal
+   layer cache already reuses everything above that `ARG` (apt packages, the
+   Node download), only re-running the affected layer onward. If anything
+   *not* pinned in the Dockerfile changed instead (`gh`, `rtk`, the `ubuntu`
+   base image, or `--force`), it falls back to a full
+   `docker compose build --pull --no-cache`, since those RUN layers have no
+   version in their command text for Docker to key the cache on, and only
+   `--no-cache` forces them to re-check upstream.
 
 Available **major** upgrades (a newer Ubuntu release, a newer Node major
 version) are only reported, never applied automatically — bumping

@@ -3,11 +3,13 @@
 # claude-code image. First checks upstream sources (ubuntu base image,
 # egress-proxy image, gh, Node patch release, npm claude-code, rtk) for
 # anything newer than what's currently installed. Only if something is
-# actually newer does it rebuild the image with --pull --no-cache (which
-# also happens to pick up any apt package bumps within the pulled ubuntu
-# layer) and restart the stack. Pass --force to skip the check and always
-# rebuild. Major version bumps (Ubuntu, Node) are only ever reported, never
-# applied automatically -- see README.md "Updating dependencies".
+# actually newer does it rebuild the image and restart the stack -- with
+# --pull --no-cache if the change involves anything not version-pinned in
+# the Dockerfile (ubuntu base, egress-proxy, gh, rtk, or --force), or with a
+# plain cached --pull build if only pinned ARGs (claude-code, node) changed,
+# since bumping those already busts just their own layer onward. Major
+# version bumps (Ubuntu, Node) are only ever reported, never applied
+# automatically -- see README.md "Updating dependencies".
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -128,11 +130,19 @@ echo "==> Checking upstream sources for newer patch/minor versions..."
 
 REBUILD_REASONS=()
 
+# Stays true only while every pending change is one Docker can pick up via a
+# normal (cached) build -- i.e. only pinned ARGs (claude-code, node) changed.
+# gh/rtk/apt packages aren't version-pinned in the Dockerfile, so their RUN
+# layers never invalidate on their own and genuinely need --no-cache to
+# re-check upstream; same for a base-image swap or an explicit --force.
+CACHE_SAFE=true
+
 UBUNTU_ID_BEFORE="$(image_id "ubuntu:${CURRENT_UBUNTU_TAG}")"
 docker pull -q "ubuntu:${CURRENT_UBUNTU_TAG}" >/dev/null 2>&1 || true
 UBUNTU_ID_AFTER="$(image_id "ubuntu:${CURRENT_UBUNTU_TAG}")"
 if [ -z "$UBUNTU_ID_BEFORE" ] || [ "$UBUNTU_ID_BEFORE" != "$UBUNTU_ID_AFTER" ]; then
     REBUILD_REASONS+=("ubuntu:${CURRENT_UBUNTU_TAG} base image has a newer layer available")
+    CACHE_SAFE=false
 fi
 
 EGRESS_BEFORE="$(egress_proxy_digest)"
@@ -140,21 +150,28 @@ docker compose pull egress-proxy
 EGRESS_TAG_ID_AFTER="$(image_id "ubuntu/squid:latest")"
 if [ -n "$EGRESS_TAG_ID_AFTER" ] && [ "$EGRESS_TAG_ID_AFTER" != "$EGRESS_BEFORE" ]; then
     REBUILD_REASONS+=("egress-proxy image updated upstream")
+    CACHE_SAFE=false
 fi
 
 GH_LATEST="$(curl -fsSL -m 10 https://api.github.com/repos/cli/cli/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "")"
 if [ -n "$GH_LATEST" ] && [ -n "$GH_CURRENT" ] && [ "$GH_LATEST" != "$GH_CURRENT" ]; then
     REBUILD_REASONS+=("gh ${GH_CURRENT} -> ${GH_LATEST}")
+    CACHE_SAFE=false
 fi
 
 NPM_LATEST="$(curl -fsSL -m 10 https://registry.npmjs.org/@anthropic-ai/claude-code/latest 2>/dev/null | grep -o '"version":"[0-9.]*"' | head -1 | cut -d'"' -f4 || echo "")"
 if [ -n "$NPM_LATEST" ] && [ -n "$NPM_CURRENT" ] && [ "$NPM_LATEST" != "$NPM_CURRENT" ]; then
     REBUILD_REASONS+=("claude-code (npm) ${NPM_CURRENT} -> ${NPM_LATEST}")
+    # ARG CLAUDE_CODE_VERSION is pinned right before its RUN in the Dockerfile,
+    # so bumping it here only busts that layer onward, not the apt/Node layers
+    # above -- same trick as the NODE_VERSION rewrite below.
+    sed -i "s/^ARG CLAUDE_CODE_VERSION=.*/ARG CLAUDE_CODE_VERSION=${NPM_LATEST}/" Dockerfile
 fi
 
 RTK_LATEST="$(curl -fsSL -m 10 https://api.github.com/repos/rtk-ai/rtk/releases/latest 2>/dev/null | grep -m1 '"tag_name"' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "")"
 if [ -n "$RTK_LATEST" ] && [ -n "$RTK_CURRENT" ] && [ "$RTK_LATEST" != "$RTK_CURRENT" ]; then
     REBUILD_REASONS+=("rtk ${RTK_CURRENT} -> ${RTK_LATEST}")
+    CACHE_SAFE=false
 fi
 
 if [ -n "$NODE_LATEST_PATCH" ] && [[ ! "$NODE_LATEST_PATCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -165,13 +182,14 @@ fi
 if [ -n "$NODE_LATEST_PATCH" ] && [ -n "$NODE_CURRENT" ] && [ "$NODE_LATEST_PATCH" != "$NODE_CURRENT" ]; then
     REBUILD_REASONS+=("node ${NODE_CURRENT} -> ${NODE_LATEST_PATCH}")
     # Unlike NodeSource's rolling repo, the tarball install is pinned to an
-    # exact version -- bump it here so the upcoming --no-cache build actually
-    # picks up the newer patch instead of just re-fetching the same one.
+    # exact version -- bump it here so the upcoming build actually picks up
+    # the newer patch instead of reusing the cached layer for the old one.
     sed -i "s/^ARG NODE_VERSION=.*/ARG NODE_VERSION=${NODE_LATEST_PATCH#v}/" Dockerfile
 fi
 
 if [ "$FORCE" = true ]; then
     REBUILD_REASONS+=("--force requested")
+    CACHE_SAFE=false
 fi
 
 if [ "${#REBUILD_REASONS[@]}" -eq 0 ]; then
@@ -197,10 +215,15 @@ echo ""
 
 # --- 4. apply updates ----------------------------------------------------
 
-echo "==> Rebuilding claude-code image (--pull --no-cache)..."
-export CLAUDE_CODE_VERSION="${NPM_LATEST:-${NPM_CURRENT:-unknown}}"
+export CLAUDE_CODE_VERSION="${NPM_LATEST:-${NPM_CURRENT:-latest}}"
 export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-docker compose build --pull --no-cache
+if [ "$CACHE_SAFE" = true ]; then
+    echo "==> Rebuilding claude-code image (--pull, cache-safe -- only pinned ARGs changed)..."
+    docker compose build --pull
+else
+    echo "==> Rebuilding claude-code image (--pull --no-cache)..."
+    docker compose build --pull --no-cache
+fi
 
 echo "==> Recreating containers..."
 docker compose up -d --force-recreate
