@@ -42,9 +42,13 @@ That's the actual purpose of this repo, not incidental config.
 
 ## Per-workspace `.squid-claudecode-docker` overrides
 
-`bin/cc-container` exports `SQUID_WORKSPACE_DIR` to
-`$HOST_WORKSPACE/.squid-claudecode-docker` if that directory exists in the
-target workspace, else to this repo's `.squid-empty/` placeholder.
+`bin/cc-container` creates `$HOST_WORKSPACE/.squid-claudecode-docker` (as
+the invoking host user, if it doesn't already exist) and exports
+`SQUID_WORKSPACE_DIR` to it — creating it here rather than letting Docker
+auto-create the bind-mount source avoids Docker creating it as root and
+leaving it unwritable for future edits. `docker-compose.yml`'s own
+`${SQUID_WORKSPACE_DIR:-./.squid-empty}` default only matters if
+`docker compose` is invoked directly, bypassing `cc-container`.
 `docker-compose.yml` bind-mounts it into `egress-proxy` at
 `/etc/squid/conf.d/workspace`, alongside this repo's own
 `.squid-claudecode-docker/` (always mounted at `/etc/squid/conf.d/defaults`).

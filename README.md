@@ -281,9 +281,11 @@ acl allowed_domains dstdomain internal.registry.company.com
 automatically via `$HOST_WORKSPACE/.squid-claudecode-docker` and merges it in
 alongside this repo's defaults for that workspace's own `egress-proxy`
 instance — other workspaces are unaffected. If the workspace has no
-`.squid-claudecode-docker/` folder, it just gets the defaults. (The
-`-claudecode-docker` suffix keeps this unambiguous in case the workspace
-ever has some other, unrelated `.squid` folder of its own.)
+`.squid-claudecode-docker/` folder yet, `cc-container` creates an empty one
+for you (as your own user, so it's writable) and the workspace just gets
+the defaults until you add a `.conf` file to it. (The `-claudecode-docker`
+suffix keeps this unambiguous in case the workspace ever has some other,
+unrelated `.squid` folder of its own.)
 
 Create or edit that `.squid-claudecode-docker/` folder from the host (or
 another trusted process) *before* or *between* `cc-container` runs — it's
