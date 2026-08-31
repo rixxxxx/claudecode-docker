@@ -266,11 +266,30 @@ docker ps --format 'table {{.Names}}\t{{.Label "dev.claudecode-docker.version"}}
 
 ## Extending the domain allowlist
 
-Add a new domain (e.g. a private registry) to `squid.conf`:
+There are two ways to add a domain, depending on scope:
+
+**Tool-wide default** (applies to every workspace): add it to
+`.squid/00-defaults.conf` in this repo:
+```
 acl allowed_domains dstdomain internal.registry.company.com
+```
 
+**Single workspace only**: create a `.squid/` folder in the *target*
+project you run `cc-container` from (e.g. `ottercache/.squid/extra.conf`),
+with the same `acl allowed_domains dstdomain ...` line. `cc-container`
+picks it up automatically via `$HOST_WORKSPACE/.squid` and merges it in
+alongside this repo's defaults for that workspace's own `egress-proxy`
+instance — other workspaces are unaffected. If the workspace has no
+`.squid/` folder, it just gets the defaults.
 
-Then restart the proxy:
+Create or edit that `.squid/` folder from the host (or another trusted
+process) *before* or *between* `cc-container` runs — it's intentionally
+mounted read-only inside the `claude-code` container itself (shadowing
+that one subpath of the otherwise read-write `/workspace` mount), so a
+Claude Code session can see its own effective network policy but can
+never widen it from inside the sandbox.
+
+Either way, restart the proxy to pick up the change:
 
 ```bash
 docker compose restart egress-proxy

@@ -10,6 +10,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 export HOST_WORKSPACE="$(pwd -P)"
 
+# Per-workspace Squid additions: if the target workspace has its own
+# .squid/ folder, mount it into the egress-proxy alongside this repo's
+# defaults; otherwise fall back to a checked-in empty placeholder so the
+# bind-mount source always exists.
+if [ -d "$HOST_WORKSPACE/.squid" ]; then
+    export SQUID_WORKSPACE_DIR="$HOST_WORKSPACE/.squid"
+else
+    export SQUID_WORKSPACE_DIR="$PROJECT_ROOT/.squid-empty"
+fi
+
 # Derive a stable, unique Compose project name from the workspace path so
 # each distinct host workspace gets its own containers, networks, and
 # dedicated egress-proxy (true parallelism), while repeated runs from the

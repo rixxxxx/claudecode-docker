@@ -15,18 +15,21 @@ Key files:
 | `bin/update-deps.sh`   | Host-side dependency updater, invoked via `cc-container --update` |
 | `Dockerfile`           | Builds the Claude Code image                                |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy`, networks       |
-| `squid.conf`           | Domain allowlist for the egress proxy                       |
+| `squid.conf`           | Squid skeleton (ports/safety rules + `include`s) for the egress proxy |
+| `.squid/`              | This repo's default domain allowlist (`include`d by `squid.conf`) |
+| `.squid-empty/`        | Placeholder mounted when a target workspace has no `.squid/` of its own |
 | `entrypoint.sh`        | Container entrypoint (terminal setup, welcome banner)       |
 
 ## Security-critical files — change with care
 
-`squid.conf` and the `networks:` section in `docker-compose.yml` form the
-entire network isolation of the container. That's the actual purpose of
-this repo, not incidental config.
+`squid.conf`, `.squid/`, and the `networks:` section in
+`docker-compose.yml` form the entire network isolation of the container.
+That's the actual purpose of this repo, not incidental config.
 
-- Only add new domains to `squid.conf` when actually needed, with a short
+- Only add new domains to `.squid/` when actually needed, with a short
   comment explaining what they're for (see existing blocks: Auth/API,
-  npm, GitHub, Node.js).
+  npm, GitHub, Node.js). The same rules apply to a target workspace's own
+  `.squid/*.conf` files (see "Per-workspace `.squid` overrides" below).
 - Never propose wildcard grants (`.com`, entire CDNs without reason) or
   `allow all` — that undermines the allowlist model.
 - Don't remove `internal: true` on the `internal` network in
@@ -36,6 +39,31 @@ this repo, not incidental config.
   `Dockerfile`). Don't make changes that remove `USER claudecode` or add
   root privileges at runtime without explicit confirmation.
 
+## Per-workspace `.squid` overrides
+
+`bin/cc-container` exports `SQUID_WORKSPACE_DIR` to `$HOST_WORKSPACE/.squid`
+if that directory exists in the target workspace, else to this repo's
+`.squid-empty/` placeholder. `docker-compose.yml` bind-mounts it into
+`egress-proxy` at `/etc/squid/conf.d/workspace`, alongside this repo's own
+`.squid/` (always mounted at `/etc/squid/conf.d/defaults`). `squid.conf`
+`include`s both directories — additive, not override: a workspace's rules
+extend this repo's defaults, they don't replace them.
+
+Trust boundary: the `acl allowed_domains`/`http_access` rules in a target
+repo's `.squid/*.conf` are only ever as broad as whoever committed them to
+that repo intended — the `claude-code` container itself cannot widen its
+own allowlist. `docker-compose.yml`'s `claude-code` service mounts
+`${SQUID_WORKSPACE_DIR:-./.squid-empty}` a second time, read-only, at
+`/workspace/.squid` — this shadows that one subpath of the otherwise
+read-write `/workspace` mount, so a session running inside `claude-code`
+can read its own effective network policy but never create or modify it.
+Anyone changing a workspace's `.squid/` therefore has to do so from
+outside the sandbox (the host, or another trusted process) before/between
+`cc-container` runs — never keep this mount writable inside `claude-code`.
+This override is scoped to that workspace's own dedicated `egress-proxy`
+instance (see "Multi-instance invariants" below) — it can't affect other
+workspaces.
+
 ## Validating changes
 
 There's no test suite. Validation happens by actually building/starting:
@@ -44,13 +72,14 @@ There's no test suite. Validation happens by actually building/starting:
 docker compose config          # check compose file syntax/interpolation
 docker compose build           # build Dockerfile changes
 docker compose up -d
-docker compose exec egress-proxy squid -k parse   # check squid.conf syntax
+docker compose exec egress-proxy squid -k parse   # check merged squid.conf + .squid/ syntax
 docker compose logs egress-proxy | grep TCP_DENIED # see blocked connections
 ```
 
 ## Style
 
-- `squid.conf`: comments group domains by purpose (block header, then
+- `squid.conf`, `.squid/*.conf`, and a target workspace's own
+  `.squid/*.conf`: comments group domains by purpose (block header, then
   `acl allowed_domains dstdomain ...` lines). Follow this pattern rather
   than introducing new structures.
 - Keep documentation in English, consistent with `README.md`.
