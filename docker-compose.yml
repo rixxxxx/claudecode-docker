@@ -13,10 +13,11 @@ services:
         required: false
     volumes:
       - ${HOST_WORKSPACE:-.}:/workspace
-      # Shadow the workspace's own .squid/ with a read-only mount so the
-      # agent running in here can't rewrite the network policy egress-proxy
-      # reads from the same host directory (see AGENTS.md).
-      - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/workspace/.squid:ro
+      # Shadow the workspace's own .squid-claudecode-docker/ with a read-only
+      # mount so the agent running in here can't rewrite the network
+      # policy egress-proxy reads from the same host directory (see
+      # AGENTS.md).
+      - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/workspace/.squid-claudecode-docker:ro
       # Optional: reuse OAuth credentials from the host
       # - ${HOME}/.claude:/home/claudecode/.claude
     environment:
@@ -35,7 +36,7 @@ services:
     image: ubuntu/squid:latest
     volumes:
       - ./squid.conf:/etc/squid/squid.conf:ro
-      - ./.squid:/etc/squid/conf.d/defaults:ro
+      - ./.squid-claudecode-docker:/etc/squid/conf.d/defaults:ro
       - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/etc/squid/conf.d/workspace:ro
     networks:
       - internal
