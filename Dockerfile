@@ -87,7 +87,7 @@ ENV XDG_CONFIG_HOME=/home/claudecode/.config
 # here rather than at the top of the file so bumping it only invalidates this
 # layer and everything below -- not the apt/Node layers above -- mirroring the
 # NODE_VERSION pattern above.
-ARG CLAUDE_CODE_VERSION=latest
+ARG CLAUDE_CODE_VERSION=2.1.252
 
 # Install ClaudeCode via npm (more reliable than curl install script)
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
