@@ -68,6 +68,8 @@ behind it.)
 
 | File                  | Purpose                                                        |
 |-----------------------|-----------------------------------------------------------------|
+| `install.sh`           | One-time host setup: symlinks `cc-container` onto `PATH`       |
+| `uninstall.sh`         | Reverses `install.sh`; optionally removes the built image      |
 | `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
 | `bin/update-deps.sh`   | Host-side dependency updater: rebuild + report version changes |
 | `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via official tarball, gh CLI) |
@@ -81,6 +83,18 @@ behind it.)
 
 1. Clone this repo.
 2. One-time: put `cc-container` on your `PATH`:
+
+```bash
+./install.sh
+```
+
+This checks for Docker/Compose, symlinks `bin/cc-container` into
+`~/.local/bin`, and adds `~/.local/bin` to `PATH` in your shell rc file if
+it isn't there yet (idempotent — safe to re-run). To undo it later, run
+`./uninstall.sh` (also offers to remove the built `claude-code:latest`
+image).
+
+Equivalent manual steps, if you'd rather not run a script:
 
 ```bash
 mkdir -p ~/.local/bin
