@@ -18,7 +18,8 @@ Key files:
 | `squid.conf`           | Squid skeleton (ports/safety rules + `include`s) for the egress proxy |
 | `.squid-claudecode-docker/` | This repo's default domain allowlist (`include`d by `squid.conf`) |
 | `.squid-empty/`        | Placeholder mounted when a target workspace has no `.squid-claudecode-docker/` of its own |
-| `.squid-upstream-proxy/` | Generated (gitignored) by `bin/cc-container` from `.env`: enterprise proxy chaining for `egress-proxy` — see "Enterprise proxy support" below |
+| `.squid-upstream-proxy/` | Generated (gitignored) by `bin/cc-container` from `.env`: enterprise proxy chaining for `egress-proxy` + build-time proxy secrets — see "Enterprise proxy support" below |
+| `.squid-empty-secret`  | Tracked, always-present empty fallback for the build-time proxy secrets when `docker compose build` is run directly, bypassing `cc-container` |
 | `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (px) for NTLM/Kerberos corporate proxies |
 | `entrypoint.sh`        | Container entrypoint (terminal setup, welcome banner)       |
 
@@ -68,11 +69,26 @@ code:
   `Dockerfile.proxy-auth`), which handles the real corporate auth and
   exposes a plain local proxy. Only built/started via the `enterprise-proxy`
   Compose profile, which `bin/cc-container` adds automatically when needed.
-- `Dockerfile` and `Dockerfile.proxy-auth` both accept `HTTP_PROXY`/
-  `HTTPS_PROXY`/`NO_PROXY` build args (for their own RUN steps: apt, curl,
-  npm, gh, rtk, pip) and both trust an optional `certs/*.crt` enterprise CA
-  at build time, before their non-root `USER` switch — the only way to get
-  CA trust without granting runtime root (see the point above).
+- **Build-time proxy: BuildKit secrets, never `ARG`/`build.args`.**
+  `Dockerfile`/`Dockerfile.proxy-auth` pull `HTTP_PROXY`/`HTTPS_PROXY`/
+  `NO_PROXY` into individual RUN steps via
+  `--mount=type=secret,id=...,env=VAR`, sourced from
+  `docker-compose.yml`'s top-level `secrets:` block (file-backed,
+  `render_build_secret_files()` in `bin/cc-container` writes the real
+  files into `.squid-upstream-proxy/*.secret` and exports the
+  `*_SECRET_FILE` vars those `secrets:` entries reference; without them —
+  e.g. `docker compose build` run directly, bypassing `cc-container` — the
+  `${VAR:-./.squid-empty-secret}` fallback resolves to a tracked, always-
+  present, empty file, the same pattern already used for
+  `SQUID_WORKSPACE_DIR`/`.squid-empty`). **Do not** reintroduce `ARG
+  HTTP_PROXY`/`build.args` for these — Docker's own docs warn that `ARG`
+  values persist in `docker history`/image metadata even though never
+  written to the image filesystem, which would leak a corporate proxy
+  password baked into a shared image. `tests/security/test_static_hardening.sh`
+  guards against this regressing.
+- Both Dockerfiles also trust an optional `certs/*.crt` enterprise CA at
+  build time, before their non-root `USER` switch — the only way to get CA
+  trust without granting runtime root (see the point above).
 - The `proxy-auth-entrypoint.sh` script's exact `px` invocation was written
   from documentation knowledge, not verified live (no network access at
   authoring time) — see the verification comment at its top before relying

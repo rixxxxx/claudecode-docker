@@ -5,13 +5,16 @@ services:
       args:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         BUILD_DATE: ${BUILD_DATE:-unknown}
-        # Enterprise proxy support (see README "Enterprise proxy support"):
-        # only affects build-time RUN steps (apt/curl/npm/gh/rtk). Runtime
-        # HTTP_PROXY/HTTPS_PROXY for the running container are set below
-        # under `environment:` and point at egress-proxy instead.
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
+      # Enterprise proxy support (see README "Enterprise proxy support"):
+      # only affects build-time RUN steps (apt/curl/npm/gh/rtk), via BuildKit
+      # secret mounts in the Dockerfile -- not build.args, which (like ARG)
+      # would persist a corporate proxy password in `docker history`. Runtime
+      # HTTP_PROXY/HTTPS_PROXY for the running container are set below under
+      # `environment:` and point at egress-proxy instead; unrelated to this.
+      secrets:
+        - http_proxy
+        - https_proxy
+        - no_proxy
     image: claude-code:latest
     stdin_open: true
     tty: true
@@ -70,10 +73,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.proxy-auth
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
+      secrets:
+        - http_proxy
+        - https_proxy
+        - no_proxy
     image: claude-code-proxy-auth:latest
     profiles:
       - enterprise-proxy
@@ -98,3 +101,23 @@ networks:
   # bypassing Squid's domain allowlist.
   proxy-chain:
     driver: bridge
+
+# Build-time-only secrets (see "Enterprise proxy support" comment on the
+# claude-code service above): file-backed rather than Compose's newer
+# `environment:` secret source, since that needs a fairly recent Compose
+# version this repo doesn't otherwise require. bin/cc-container's
+# render_build_secret_files() renders the real files into
+# .squid-upstream-proxy/ (gitignored, never committed) and exports the
+# *_SECRET_FILE vars below to point at them. Unlike the SQUID_WORKSPACE_DIR
+# directory mount elsewhere in this file, Compose won't auto-create a
+# missing secret *file* -- so invoking `docker compose build` directly,
+# bypassing cc-container (same caveat AGENTS.md already documents for
+# SQUID_WORKSPACE_DIR), falls back to the tracked, always-present, empty
+# .squid-empty-secret instead of erroring.
+secrets:
+  http_proxy:
+    file: ${HTTP_PROXY_SECRET_FILE:-./.squid-empty-secret}
+  https_proxy:
+    file: ${HTTPS_PROXY_SECRET_FILE:-./.squid-empty-secret}
+  no_proxy:
+    file: ${NO_PROXY_SECRET_FILE:-./.squid-empty-secret}

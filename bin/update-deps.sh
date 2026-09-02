@@ -26,6 +26,15 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
     set +a
 fi
 
+# Reuses render_build_secret_files() from bin/cc-container (source-guarded:
+# sourcing it only defines functions/vars, no side effects) so the `docker
+# compose build`/`up -d` calls below pick up HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+# via BuildKit secrets the same way cc-container itself does -- see
+# AGENTS.md "Enterprise proxy support" for why this isn't build.args.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/cc-container"
+render_build_secret_files
+
 if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
     echo "Note: not invoked via 'cc-container --update' — operating on Compose's" >&2
     echo "      default project ($(basename "$PROJECT_ROOT")), not a specific workspace." >&2

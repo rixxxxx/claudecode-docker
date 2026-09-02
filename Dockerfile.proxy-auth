@@ -17,18 +17,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Same build-time proxy support as the main Dockerfile: pip install below
 # needs to reach PyPI through the very corporate proxy this image exists to
-# talk to.
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
+# talk to. Passed as BuildKit secrets, not ARG/ENV -- see Dockerfile's
+# "Enterprise network support" comment for why (ARG values persist in
+# `docker history`/image metadata).
 
 # ca-certificates: not guaranteed present on python:slim. krb5 dev headers +
 # gcc are needed to build px's optional Kerberos extra, removed again after
 # pip install; krb5-user stays (needed at runtime for Kerberos ticket use).
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -41,7 +40,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY certs/ /usr/local/share/ca-certificates/enterprise/
 RUN update-ca-certificates
 
-RUN pip install --no-cache-dir 'px-proxy[kerberos]' \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    pip install --no-cache-dir 'px-proxy[kerberos]' \
     && apt-get purge -y gcc libkrb5-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*

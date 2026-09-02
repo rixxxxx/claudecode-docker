@@ -332,9 +332,10 @@ NO_PROXY=localhost,127.0.0.1
 
 This is used two ways:
 
-- **At image build time**, as build args for `Dockerfile`/`Dockerfile.proxy-auth`,
-  since `apt`, `curl`, `npm`, `gh`, `rtk`, and `pip` all fetch over the
-  network during the build.
+- **At image build time**, passed into `Dockerfile`/`Dockerfile.proxy-auth`
+  as BuildKit secrets (not build args — a corporate proxy password in a
+  build arg would persist in `docker history`), since `apt`, `curl`, `npm`,
+  `gh`, `rtk`, and `pip` all fetch over the network during the build.
 - **At runtime**, parsed by `bin/cc-container` into a Squid `cache_peer`
   directive, so `egress-proxy` chains to your corporate proxy instead of
   reaching the internet directly. `claude-code` itself is unaffected — it

@@ -44,9 +44,29 @@ test_dockerfiles_dont_copy_full_build_context() {
     done
 }
 
+test_dockerfiles_dont_leak_proxy_credentials_via_build_args() {
+    # Regression guard for a real finding: ARG values (unlike BuildKit
+    # secrets) persist in `docker history`/image metadata even though never
+    # written to the image filesystem -- passing HTTP_PROXY/HTTPS_PROXY
+    # (which can contain a corporate proxy password) as ARG/build.args would
+    # leak it into a shared image. See AGENTS.md "Enterprise proxy support".
+    local f
+    for f in "$REPO_ROOT/Dockerfile" "$REPO_ROOT/Dockerfile.proxy-auth"; do
+        CURRENT_TEST="no ARG HTTP_PROXY in $(basename "$f")"
+        assert_not_contains "$(cat "$f")" "ARG HTTP_PROXY"
+        CURRENT_TEST="no ARG HTTPS_PROXY in $(basename "$f")"
+        assert_not_contains "$(cat "$f")" "ARG HTTPS_PROXY"
+        CURRENT_TEST="no ARG NO_PROXY in $(basename "$f")"
+        assert_not_contains "$(cat "$f")" "ARG NO_PROXY"
+        CURRENT_TEST="uses --mount=type=secret for http_proxy in $(basename "$f")"
+        assert_contains "$(cat "$f")" "mount=type=secret,id=http_proxy"
+    done
+}
+
 run_test test_no_service_is_privileged
 run_test test_no_service_adds_capabilities
 run_test test_no_service_mounts_docker_socket
 run_test test_dockerfiles_dont_copy_full_build_context
+run_test test_dockerfiles_dont_leak_proxy_credentials_via_build_args
 
 print_summary

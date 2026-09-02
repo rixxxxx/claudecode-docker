@@ -117,6 +117,30 @@ render_upstream_proxy_conf() {
     fi
 }
 
+# Renders the three build-time proxy secret files consumed by Dockerfile/
+# Dockerfile.proxy-auth via BuildKit --mount=type=secret (see
+# docker-compose.yml's top-level secrets: block), and exports the
+# *_SECRET_FILE vars docker-compose.yml points at, so the docker compose
+# child process picks up these real files instead of the empty fallback.
+# Passed as secrets rather than build args because ARG values persist in
+# `docker history`/image metadata even though never written to the image
+# filesystem -- that would leak a corporate proxy password baked into a
+# shared image (see AGENTS.md "Enterprise proxy support"). Expects
+# PROJECT_ROOT to already be set by the caller.
+render_build_secret_files() {
+    local conf_dir="$PROJECT_ROOT/.squid-upstream-proxy"
+    mkdir -p "$conf_dir"
+    chmod 700 "$conf_dir"
+    printf '%s' "${HTTP_PROXY:-}" > "$conf_dir/http_proxy.secret"
+    printf '%s' "${HTTPS_PROXY:-}" > "$conf_dir/https_proxy.secret"
+    printf '%s' "${NO_PROXY:-}" > "$conf_dir/no_proxy.secret"
+    chmod 600 "$conf_dir/http_proxy.secret" "$conf_dir/https_proxy.secret" "$conf_dir/no_proxy.secret"
+
+    export HTTP_PROXY_SECRET_FILE="$conf_dir/http_proxy.secret"
+    export HTTPS_PROXY_SECRET_FILE="$conf_dir/https_proxy.secret"
+    export NO_PROXY_SECRET_FILE="$conf_dir/no_proxy.secret"
+}
+
 main() {
     # docker compose auto-loads .env for its own ${...} interpolation, but
     # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
@@ -153,6 +177,7 @@ main() {
 
     NEEDS_PROXY_AUTH_SIDECAR=false
     render_upstream_proxy_conf
+    render_build_secret_files
 
     compose_profile_args=()
     if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then

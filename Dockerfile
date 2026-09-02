@@ -10,28 +10,27 @@ LABEL version="1.0"
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Enterprise network support, part 1: forward-proxy for build-time RUN steps
-# (apt/curl/npm/gh/rtk below all fetch over the network during the build).
-# Empty by default (no-op for the normal, non-enterprise build). Compose's
-# `environment:` block for the running claude-code container already sets
-# its own HTTP_PROXY/HTTPS_PROXY (pointing at egress-proxy) and overrides
-# whatever is baked in here as an image ENV default, so there's no runtime
-# conflict — these only affect this build.
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
+# Enterprise network support: an optional corporate forward proxy for the
+# network-touching RUN steps below (apt/curl/npm/gh/rtk). Passed as BuildKit
+# secrets (docker-compose.yml build.secrets, rendered by
+# render_build_secret_files() in bin/cc-container from HTTP_PROXY/
+# HTTPS_PROXY/NO_PROXY in .env) rather than ARG/ENV: ARG values persist in
+# `docker history`/image metadata even though never written to the
+# filesystem, which would leak a corporate proxy password baked into a
+# shared image. Each RUN below that touches the network mounts these
+# explicitly via --mount=type=secret,id=...,env=VAR -- no image ENV is ever
+# set for them, so nothing proxy-related persists past its own RUN step.
+# Empty secrets (the default, non-enterprise case) are a no-op.
 
-# Enterprise network support, part 2: trust an optional corporate root CA
-# (for TLS-intercepting corporate proxies) before any RUN step below makes
-# an HTTPS request. certs/ is empty by default, so update-ca-certificates
-# is a no-op for the normal build. Must run as root, before USER claudecode
-# below, since claude-code runs non-root at runtime (see AGENTS.md).
 # ca-certificates isn't guaranteed present in the base ubuntu:26.04 image
-# (confirmed: it isn't), so it's installed explicitly before relying on it.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+# (confirmed: it isn't). Trust an optional corporate root CA (for
+# TLS-intercepting proxies) right after -- certs/ is empty by default, so
+# update-ca-certificates is a no-op for the normal build. Both must run as
+# root, before USER claudecode below (see AGENTS.md).
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY certs/ /usr/local/share/ca-certificates/enterprise/
@@ -43,7 +42,10 @@ RUN update-ca-certificates
 # re-check upstream apt versions, e.g. for a gh or rtk bump -- see
 # update-deps.sh), so those rebuilds don't have to re-download unchanged
 # packages just to re-verify them.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     (type -p wget >/dev/null || (apt update && apt install wget -y)) \
     && mkdir -p -m 755 /etc/apt/keyrings \
@@ -55,7 +57,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Install dependencies (ca-certificates already installed above).
 # See cache mount note on the gh-cli step above.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
     curl \
@@ -77,7 +82,10 @@ ARG NODE_VERSION=24.20.0
 # apt: NodeSource's per-release repos can lag behind brand-new Ubuntu
 # releases, silently falling back to Ubuntu's own 'nodejs' package - which,
 # unlike NodeSource's, does not bundle npm.
-RUN ARCH="$(dpkg --print-architecture)" \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
          amd64) NODE_ARCH=x64 ;; \
          arm64) NODE_ARCH=arm64 ;; \
@@ -122,13 +130,22 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # NODE_VERSION pattern above.
 ARG CLAUDE_CODE_VERSION=2.1.258
 
-# Install ClaudeCode via npm (more reliable than curl install script)
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Install ClaudeCode via npm (more reliable than curl install script).
+# The secret mounts work the same way post-USER-switch: BuildKit injects the
+# env var for this RUN's process directly, independent of the RUN's UID (see
+# AGENTS.md "Enterprise proxy support" -- verify on first real build).
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Install RTK (compresses dev-command output before it reaches the LLM
 # context window) and register its Claude Code PreToolUse hook globally.
 # --auto-patch is RTK's non-interactive install mode (see rtk-ai/rtk docs).
-RUN mkdir -p /home/claudecode/.claude \
+RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
+    --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
+    --mount=type=secret,id=no_proxy,env=NO_PROXY \
+    mkdir -p /home/claudecode/.claude \
     && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh \
     && rtk init -g --auto-patch
 
