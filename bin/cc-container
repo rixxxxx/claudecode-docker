@@ -32,6 +32,32 @@ derive_compose_project_name() {
     echo "cc-${slug:-ws}-${hash}"
 }
 
+# ensure_squid_upstream_dir -- creates $PROJECT_ROOT/.squid-upstream-proxy
+# (as the invoking host user) if missing and chmods it 700, echoing its
+# path. Used by both render_upstream_proxy_conf() and
+# render_build_secret_files() below, which write into the same directory.
+# If it already exists but isn't writable by the current user -- e.g. an
+# older docker-compose.yml let Docker auto-create it as root as a
+# bind-mount source before this fallback pattern existed here, the exact
+# footgun already documented for .squid-claudecode-docker in main() below
+# -- fail with a clear, actionable message instead of a bare `chmod:
+# Operation not permitted` under set -e.
+ensure_squid_upstream_dir() {
+    local conf_dir="$PROJECT_ROOT/.squid-upstream-proxy"
+    mkdir -p "$conf_dir" 2>/dev/null || true
+
+    if [ ! -w "$conf_dir" ]; then
+        echo "Error: $conf_dir exists but isn't writable by $(whoami)." >&2
+        echo "       This can happen if Docker auto-created it as root as a bind-mount" >&2
+        echo "       source before it existed (see AGENTS.md). Fix once with:" >&2
+        echo "         sudo rm -rf '$conf_dir'" >&2
+        exit 1
+    fi
+
+    chmod 700 "$conf_dir"
+    echo "$conf_dir"
+}
+
 # Enterprise proxy chaining (see README "Enterprise proxy support"): renders
 # .squid-upstream-proxy/{upstream.conf,px.ini} from HTTP(S)_PROXY/
 # ENTERPRISE_PROXY_AUTH in .env/the environment. Empty HTTP(S)_PROXY is a
@@ -41,11 +67,10 @@ derive_compose_project_name() {
 # cache_peer login= handles that directly. Expects PROJECT_ROOT and
 # NEEDS_PROXY_AUTH_SIDECAR to already be set by the caller.
 render_upstream_proxy_conf() {
-    local conf_dir="$PROJECT_ROOT/.squid-upstream-proxy"
+    local conf_dir
+    conf_dir="$(ensure_squid_upstream_dir)"
     local upstream_conf="$conf_dir/upstream.conf"
     local px_ini="$conf_dir/px.ini"
-    mkdir -p "$conf_dir"
-    chmod 700 "$conf_dir"
     rm -f "$px_ini"
 
     # Compose falls back to ./.squid-empty (the same tracked placeholder
@@ -138,9 +163,8 @@ render_upstream_proxy_conf() {
 # shared image (see AGENTS.md "Enterprise proxy support"). Expects
 # PROJECT_ROOT to already be set by the caller.
 render_build_secret_files() {
-    local conf_dir="$PROJECT_ROOT/.squid-upstream-proxy"
-    mkdir -p "$conf_dir"
-    chmod 700 "$conf_dir"
+    local conf_dir
+    conf_dir="$(ensure_squid_upstream_dir)"
     printf '%s' "${HTTP_PROXY:-}" > "$conf_dir/http_proxy.secret"
     printf '%s' "${HTTPS_PROXY:-}" > "$conf_dir/https_proxy.secret"
     printf '%s' "${NO_PROXY:-}" > "$conf_dir/no_proxy.secret"
