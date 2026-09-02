@@ -24,6 +24,10 @@ docker-compose*.yml
 *.pem
 *.key
 
+# Exception: an optional enterprise root CA the Dockerfile trusts at build
+# time (see certs/.gitkeep) — not a secret, a public certificate.
+!certs/*.crt
+
 # OS/editor cruft
 .DS_Store
 .vscode

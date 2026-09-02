@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# Sidecar for enterprise corporate proxies that require NTLM or Kerberos
+# authentication (Basic alone doesn't need this — see README "Enterprise
+# proxy support"). Runs px (https://github.com/genotrance/px), which
+# authenticates against the corporate proxy and exposes a plain,
+# unauthenticated local HTTP proxy that egress-proxy's Squid chains to via
+# cache_peer. Only built/started when the "enterprise-proxy" Compose
+# profile is active (see bin/cc-container).
+
+FROM python:3.12-slim
+
+LABEL maintainer="claudecode-docker"
+LABEL description="px sidecar: NTLM/Kerberos auth relay for egress-proxy's upstream corporate proxy"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Same build-time proxy support as the main Dockerfile: pip install below
+# needs to reach PyPI through the very corporate proxy this image exists to
+# talk to.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
+# ca-certificates: not guaranteed present on python:slim. krb5 dev headers +
+# gcc are needed to build px's optional Kerberos extra, removed again after
+# pip install; krb5-user stays (needed at runtime for Kerberos ticket use).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    gcc \
+    libkrb5-dev \
+    krb5-user
+
+# Same optional enterprise CA trust as the main Dockerfile (certs/ is empty
+# by default, so this is a no-op for the common case).
+COPY certs/ /usr/local/share/ca-certificates/enterprise/
+RUN update-ca-certificates
+
+RUN pip install --no-cache-dir 'px-proxy[kerberos]' \
+    && apt-get purge -y gcc libkrb5-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY proxy-auth-entrypoint.sh /usr/local/bin/proxy-auth-entrypoint.sh
+RUN chmod +x /usr/local/bin/proxy-auth-entrypoint.sh
+
+EXPOSE 3128
+
+ENTRYPOINT ["/usr/local/bin/proxy-auth-entrypoint.sh"]

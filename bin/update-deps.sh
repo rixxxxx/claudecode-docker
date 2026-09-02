@@ -16,6 +16,16 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# So the curl calls below (upstream version checks) go through a corporate
+# proxy set only in .env, not just the shell's own exported environment.
+# See README "Enterprise proxy support".
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/.env"
+    set +a
+fi
+
 if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
     echo "Note: not invoked via 'cc-container --update' — operating on Compose's" >&2
     echo "      default project ($(basename "$PROJECT_ROOT")), not a specific workspace." >&2

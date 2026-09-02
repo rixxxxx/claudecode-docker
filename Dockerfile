@@ -10,6 +10,28 @@ LABEL version="1.0"
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Enterprise network support, part 1: forward-proxy for build-time RUN steps
+# (apt/curl/npm/gh/rtk below all fetch over the network during the build).
+# Empty by default (no-op for the normal, non-enterprise build). Compose's
+# `environment:` block for the running claude-code container already sets
+# its own HTTP_PROXY/HTTPS_PROXY (pointing at egress-proxy) and overrides
+# whatever is baked in here as an image ENV default, so there's no runtime
+# conflict — these only affect this build.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
+# Enterprise network support, part 2: trust an optional corporate root CA
+# (for TLS-intercepting corporate proxies) before any RUN step below makes
+# an HTTPS request. certs/ is empty by default, so update-ca-certificates
+# is a no-op for the normal build. Must run as root, before USER claudecode
+# below, since claude-code runs non-root at runtime (see AGENTS.md).
+COPY certs/ /usr/local/share/ca-certificates/enterprise/
+RUN update-ca-certificates
+
 # Setup gh cli
 # Cache mounts persist downloaded .debs/lists across bin/update-deps.sh's
 # --no-cache rebuilds (which bypass the regular layer cache on purpose to
@@ -82,6 +104,13 @@ ENV COLORTERM=truecolor
 # (prevents workspace/.claudecode/ from shadowing the persistent data volume)
 ENV XDG_DATA_HOME=/home/claudecode/.local/share
 ENV XDG_CONFIG_HOME=/home/claudecode/.config
+
+# Node doesn't consult the system CA trust store on Linux by default, so an
+# enterprise CA trusted above (update-ca-certificates) wouldn't otherwise
+# cover npm or the Claude Code CLI itself (both Node-based). Points at the
+# full system bundle, not just the extra CA, so this is a safe no-op when
+# no enterprise CA was trusted.
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 
 # Pinned by bin/update-deps.sh when a newer npm release is available. Declared
 # here rather than at the top of the file so bumping it only invalidates this

@@ -18,6 +18,8 @@ Key files:
 | `squid.conf`           | Squid skeleton (ports/safety rules + `include`s) for the egress proxy |
 | `.squid-claudecode-docker/` | This repo's default domain allowlist (`include`d by `squid.conf`) |
 | `.squid-empty/`        | Placeholder mounted when a target workspace has no `.squid-claudecode-docker/` of its own |
+| `.squid-upstream-proxy/` | Generated (gitignored) by `bin/cc-container` from `.env`: enterprise proxy chaining for `egress-proxy` — see "Enterprise proxy support" below |
+| `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (px) for NTLM/Kerberos corporate proxies |
 | `entrypoint.sh`        | Container entrypoint (terminal setup, welcome banner)       |
 
 ## Security-critical files — change with care
@@ -39,6 +41,42 @@ That's the actual purpose of this repo, not incidental config.
 - `claude-code` intentionally runs as non-root (UID 1000, see
   `Dockerfile`). Don't make changes that remove `USER claudecode` or add
   root privileges at runtime without explicit confirmation.
+- `claude-code` must never join the `proxy-chain` network in
+  `docker-compose.yml` (only `egress-proxy` and `proxy-auth` do). That
+  network is how `egress-proxy` reaches the NTLM/Kerberos sidecar; if
+  `claude-code` could reach it too, the sandbox could bypass Squid's domain
+  allowlist entirely by talking to `proxy-auth` directly. See "Enterprise
+  proxy support" below.
+
+## Enterprise proxy support
+
+`egress-proxy` can chain to a corporate forward proxy instead of reaching
+the internet directly — see `README.md` "Enterprise proxy support" for the
+user-facing setup (`.env` variables). Mechanics, for anyone touching this
+code:
+
+- `bin/cc-container` reads `HTTP_PROXY`/`HTTPS_PROXY`/`ENTERPRISE_PROXY_AUTH`
+  from `.env` (loaded explicitly there — Compose's own `.env` auto-load
+  doesn't extend to this script) and renders
+  `.squid-upstream-proxy/{upstream.conf,px.ini}` before `docker compose up`.
+  Regenerated every run, gitignored (may contain credentials), never
+  committed.
+- Basic auth: `upstream.conf` gets a `cache_peer ... login=user:pass`
+  directly — no sidecar needed.
+- NTLM/Kerberos: Squid can't do this itself, so `upstream.conf` instead
+  points `cache_peer` at `proxy-auth` (the `px`-based sidecar, built from
+  `Dockerfile.proxy-auth`), which handles the real corporate auth and
+  exposes a plain local proxy. Only built/started via the `enterprise-proxy`
+  Compose profile, which `bin/cc-container` adds automatically when needed.
+- `Dockerfile` and `Dockerfile.proxy-auth` both accept `HTTP_PROXY`/
+  `HTTPS_PROXY`/`NO_PROXY` build args (for their own RUN steps: apt, curl,
+  npm, gh, rtk, pip) and both trust an optional `certs/*.crt` enterprise CA
+  at build time, before their non-root `USER` switch — the only way to get
+  CA trust without granting runtime root (see the point above).
+- The `proxy-auth-entrypoint.sh` script's exact `px` invocation was written
+  from documentation knowledge, not verified live (no network access at
+  authoring time) — see the verification comment at its top before relying
+  on NTLM/Kerberos in production.
 
 ## Per-workspace `.squid-claudecode-docker` overrides
 
@@ -116,7 +154,8 @@ depends on:
 - No top-level `name:` key in `docker-compose.yml` — that would outrank
   the `COMPOSE_PROJECT_NAME` env var and collapse every workspace back
   onto one shared project.
-- The `image: claude-code:latest` pin on the `claude-code` service in
+- The `image: claude-code:latest` pin on the `claude-code` service (and
+  `image: claude-code-proxy-auth:latest` on `proxy-auth`) in
   `docker-compose.yml` staying in place — without it, Compose tags the
   built image per-project (`<project>-claude-code`), causing a separate
   image build per workspace instead of one shared image.

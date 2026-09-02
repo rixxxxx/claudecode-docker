@@ -5,6 +5,13 @@ services:
       args:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         BUILD_DATE: ${BUILD_DATE:-unknown}
+        # Enterprise proxy support (see README "Enterprise proxy support"):
+        # only affects build-time RUN steps (apt/curl/npm/gh/rtk). Runtime
+        # HTTP_PROXY/HTTPS_PROXY for the running container are set below
+        # under `environment:` and point at egress-proxy instead.
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     image: claude-code:latest
     stdin_open: true
     tty: true
@@ -38,9 +45,14 @@ services:
       - ./squid.conf:/etc/squid/squid.conf:ro
       - ./.squid-claudecode-docker:/etc/squid/conf.d/defaults:ro
       - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/etc/squid/conf.d/workspace:ro
+      # Enterprise proxy chaining: rendered by bin/cc-container from
+      # HTTP_PROXY/HTTPS_PROXY in .env (see README "Enterprise proxy
+      # support"). No-op include when no enterprise proxy is configured.
+      - ./.squid-upstream-proxy:/etc/squid/conf.d/upstream:ro
     networks:
       - internal
       - external
+      - proxy-chain
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "squid", "-k", "check"]
@@ -49,9 +61,40 @@ services:
       retries: 3
       start_period: 10s
 
+  # NTLM/Kerberos relay for the corporate proxy, via px. Only needed (and
+  # only started, via the "enterprise-proxy" Compose profile) when
+  # ENTERPRISE_PROXY_AUTH is ntlm or kerberos — Basic auth is handled by
+  # Squid's own cache_peer login= directly, no sidecar required. See
+  # README "Enterprise proxy support" and AGENTS.md.
+  proxy-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy-auth
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: claude-code-proxy-auth:latest
+    profiles:
+      - enterprise-proxy
+    volumes:
+      - ./.squid-upstream-proxy/px.ini:/etc/px/px.ini:ro
+      - ${KRB5_CCNAME_PATH:-/dev/null}:/tmp/krb5cc:ro
+      - ${KRB5_CONFIG_PATH:-/dev/null}:/etc/krb5.conf:ro
+    networks:
+      - proxy-chain
+      - external
+    restart: unless-stopped
+
 networks:
   internal:
     driver: bridge
     internal: true   # critical: no default gateway to the internet
   external:
+    driver: bridge
+  # Security-critical (see AGENTS.md): only egress-proxy and proxy-auth
+  # ever join this network. claude-code must never be attached to it —
+  # that's what stops the sandbox from reaching proxy-auth directly and
+  # bypassing Squid's domain allowlist.
+  proxy-chain:
     driver: bridge
