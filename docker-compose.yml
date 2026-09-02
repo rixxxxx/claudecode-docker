@@ -51,7 +51,12 @@ services:
       # Enterprise proxy chaining: rendered by bin/cc-container from
       # HTTP_PROXY/HTTPS_PROXY in .env (see README "Enterprise proxy
       # support"). No-op include when no enterprise proxy is configured.
-      - ./.squid-upstream-proxy:/etc/squid/conf.d/upstream:ro
+      # Falls back to the same tracked, always-present .squid-empty/
+      # placeholder as SQUID_WORKSPACE_DIR below when SQUID_UPSTREAM_PROXY_DIR
+      # isn't exported (e.g. docker compose invoked directly, bypassing
+      # cc-container) -- an empty/missing directory here can otherwise make
+      # Squid's include match zero files and fail to start.
+      - ${SQUID_UPSTREAM_PROXY_DIR:-./.squid-empty}:/etc/squid/conf.d/upstream:ro
     networks:
       - internal
       - external

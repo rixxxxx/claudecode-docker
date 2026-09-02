@@ -48,6 +48,16 @@ render_upstream_proxy_conf() {
     chmod 700 "$conf_dir"
     rm -f "$px_ini"
 
+    # Compose falls back to ./.squid-empty (the same tracked placeholder
+    # used for SQUID_WORKSPACE_DIR) when this isn't exported -- e.g. when
+    # docker compose is invoked directly, bypassing cc-container entirely
+    # (as tests/integration/test_runtime.sh and
+    # tests/security/test_runtime_hardening.sh deliberately do). Without
+    # this, a missing/empty .squid-upstream-proxy/ would make Squid's
+    # `include .../upstream/*.conf` match zero files, which can prevent
+    # Squid from starting at all -- confirmed by a real test run.
+    export SQUID_UPSTREAM_PROXY_DIR="$conf_dir"
+
     local proxy_url="${HTTPS_PROXY:-${HTTP_PROXY:-}}"
     if [ -z "$proxy_url" ]; then
         printf '# No enterprise proxy configured (HTTP_PROXY/HTTPS_PROXY unset in\n# .env) -- egress-proxy connects directly to the internet.\n' \
