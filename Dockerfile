@@ -29,6 +29,11 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 # an HTTPS request. certs/ is empty by default, so update-ca-certificates
 # is a no-op for the normal build. Must run as root, before USER claudecode
 # below, since claude-code runs non-root at runtime (see AGENTS.md).
+# ca-certificates isn't guaranteed present in the base ubuntu:26.04 image
+# (confirmed: it isn't), so it's installed explicitly before relying on it.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY certs/ /usr/local/share/ca-certificates/enterprise/
 RUN update-ca-certificates
 
@@ -48,7 +53,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && mkdir -p -m 755 /etc/apt/sources.list.d \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
-# Install dependencies
+# Install dependencies (ca-certificates already installed above).
 # See cache mount note on the gh-cli step above.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -60,7 +65,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3-venv \
     ripgrep \
     build-essential \
-    ca-certificates \
     fzf \
     bsdutils \
     ncurses-base \

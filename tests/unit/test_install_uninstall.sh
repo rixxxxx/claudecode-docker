@@ -41,9 +41,28 @@ fresh_home() {
     export PATH="$WORK/fakebin:/usr/bin:/bin"
 }
 
+# path_without_docker -- a PATH pointing only at symlinks to the specific
+# external tools install.sh/uninstall.sh need (resolved from the real
+# environment), deliberately excluding docker. Just trimming directories
+# out of $PATH isn't reliable: on a real dev machine docker often lives in
+# the same directory as the coreutils these scripts still need (e.g.
+# /usr/bin), so removing that directory would break the script for the
+# wrong reason instead of genuinely simulating "docker not installed".
+path_without_docker() {
+    local jail="$WORK/path-jail"
+    mkdir -p "$jail"
+    local bin real
+    for bin in bash sh dirname readlink basename mkdir ln grep sed cat rm mv cksum cut tr env; do
+        real="$(command -v "$bin" 2>/dev/null)" || continue
+        ln -sf "$real" "$jail/$bin"
+    done
+    echo "$jail"
+}
+
 test_install_fails_cleanly_without_docker() {
     fresh_home "no_docker"
-    export PATH="/usr/bin:/bin" # no fakebin -- docker genuinely missing
+    export PATH
+    PATH="$(path_without_docker)"
     assert_failure "$REPO_ROOT/install.sh"
     assert_file_not_exists "$HOME/.local/bin/cc-container"
 }
