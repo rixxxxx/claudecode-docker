@@ -75,7 +75,10 @@ behind it.)
 | `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via official tarball, gh CLI) |
 | `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (NTLM/Kerberos corporate proxy relay, see "Enterprise proxy support") |
 | `proxy-auth-entrypoint.sh` | Entrypoint for `proxy-auth`, launches `px` against the rendered config |
-| `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy` (+ optional `proxy-auth`), defines networks |
+| `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco), see "Runtime monitoring (optional)" |
+| `falco/`               | Falco config + custom rules for `security-monitor`             |
+| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification          |
+| `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy` (+ optional `proxy-auth`/`security-monitor`), defines networks |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
 | `certs/`               | Optional enterprise root CA(s) (`*.crt`), trusted at image build time |
 | `.env.example`         | Template for `.env` — API key, enterprise proxy settings       |
@@ -390,6 +393,59 @@ don't read the system trust store by default — handled via
 - This repo doesn't alter your host's own CA trust store (e.g. for
   `bin/update-deps.sh`'s direct `curl` calls) — that must already be set up
   outside this repo if your host itself sits behind TLS interception.
+
+## Runtime monitoring (optional)
+
+The domain allowlist (`egress-proxy`) stops `claude-code` from reaching
+anywhere unexpected, but it can't see what happens *inside* the container
+— e.g. a compromised dependency reading `~/.ssh/id_rsa` and exfiltrating
+it over an already-allowed domain would sail straight through. For that,
+this repo has an optional runtime security monitor based on
+[Falco](https://falco.org) (eBPF-based syscall observation), watching
+`claude-code` from the host kernel — not by giving `claude-code` itself
+any extra privileges, but as a completely separate, off-by-default sidecar.
+
+Enable it per session with:
+
+```bash
+cc-container --monitor          # combine with --update if you also want that
+```
+
+or directly via `docker compose --profile monitoring up -d
+security-monitor`.
+
+**What it watches for** (see `falco/claude-code-rules.yaml`, plus Falco's
+own bundled default ruleset):
+- An unexpected interactive shell spawned inside `claude-code` (typical of
+  a compromised `postinstall` hook or an attempted reverse shell).
+- A write attempt against the read-only `.squid-claudecode-docker` mount
+  (an attempt to widen the sandbox's own network policy from inside).
+- An outbound connection attempt from `claude-code` to anything other than
+  `egress-proxy` (shouldn't be able to succeed given the network topology,
+  but the attempt itself is worth knowing about).
+
+**How you're notified:** natively, via your desktop's own notification
+system — `security-monitor` bind-mounts your host's D-Bus session bus and
+calls `notify-send` on each alert, so it shows up as a normal OS
+notification (tested against Linux Mint/Cinnamon; works the same way on
+GNOME/KDE/XFCE/MATE, since it's the standard freedesktop.org notification
+spec). No external service, no account, no second device to configure —
+but it does mean this only works while you have an active graphical
+session on the machine running Docker; it won't do anything useful on a
+headless server.
+
+**Trade-offs, on purpose:**
+- `security-monitor` is the one service in this repo that runs with
+  extra Linux capabilities (`cap_add`, needed for Falco's eBPF driver) —
+  scoped to only that one, never-on-by-default service; `claude-code`
+  itself gets nothing extra from this (see `AGENTS.md` "Runtime
+  monitoring").
+- No `docker.sock` mount, on purpose (even read-only, that's effectively
+  root-equivalent host access) — container attribution relies on Falco's
+  own `/proc`-based enrichment instead, which is coarser.
+- This is a detection layer, not prevention — Falco doesn't block
+  anything, it only alerts. The domain allowlist remains the actual
+  enforcement mechanism.
 
 ## Testing
 

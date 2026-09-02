@@ -12,6 +12,7 @@ SCRIPTS=(
     "$REPO_ROOT/uninstall.sh"
     "$REPO_ROOT/entrypoint.sh"
     "$REPO_ROOT/proxy-auth-entrypoint.sh"
+    "$REPO_ROOT/falco-notify.sh"
     "$REPO_ROOT/bin/cc-container"
     "$REPO_ROOT/bin/update-deps.sh"
     "$REPO_ROOT/tests/run-tests.sh"

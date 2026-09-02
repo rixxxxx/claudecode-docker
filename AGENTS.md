@@ -21,6 +21,9 @@ Key files:
 | `.squid-upstream-proxy/` | Generated (gitignored) by `bin/cc-container` from `.env`: enterprise proxy chaining for `egress-proxy` + build-time proxy secrets — see "Enterprise proxy support" below |
 | `.squid-empty-secret`  | Tracked, always-present empty fallback for the build-time proxy secrets when `docker compose build` is run directly, bypassing `cc-container` |
 | `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (px) for NTLM/Kerberos corporate proxies |
+| `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco) — see "Runtime monitoring" below |
+| `falco/`               | Falco config (`falco.yaml`) + custom rules (`claude-code-rules.yaml`) for `security-monitor` |
+| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification via the host's D-Bus session bus |
 | `entrypoint.sh`        | Container entrypoint (terminal setup, welcome banner)       |
 
 ## Security-critical files — change with care
@@ -48,6 +51,16 @@ That's the actual purpose of this repo, not incidental config.
   `claude-code` could reach it too, the sandbox could bypass Squid's domain
   allowlist entirely by talking to `proxy-auth` directly. See "Enterprise
   proxy support" below.
+- `security-monitor` (see "Runtime monitoring" below) is the **one
+  deliberate exception** to "no privileged/root/extra capabilities" in
+  this repo — eBPF-based syscall observation needs `cap_add`. This
+  exception is scoped narrowly: only that one service, never started by
+  default (`monitoring` Compose profile), and it grants `claude-code`
+  itself nothing. Don't extend `cap_add`/`privileged`/a `docker.sock`
+  mount to any other service, and don't add capabilities to
+  `security-monitor` beyond what Falco's modern eBPF driver actually
+  needs. `tests/security/test_static_hardening.sh` enforces this — its
+  checks exempt `security-monitor` specifically, nothing else.
 
 ## Enterprise proxy support
 
@@ -93,6 +106,49 @@ code:
   from documentation knowledge, not verified live (no network access at
   authoring time) — see the verification comment at its top before relying
   on NTLM/Kerberos in production.
+
+## Runtime monitoring
+
+Optional, off by default (`monitoring` Compose profile, `cc-container
+--monitor`) — see `README.md` "Runtime monitoring (optional)" for the
+user-facing explanation. Adds `security-monitor` (Falco, eBPF-based
+syscall observation) watching `claude-code` **from the host kernel**,
+entirely outside the container — this is a detection layer for behavior
+the network allowlist can't see (e.g. exfiltration via an already-allowed
+domain), not a replacement for it. Mechanics, for anyone touching this
+code:
+
+- Falco's eBPF probe sees syscalls host-wide by design (no namespace
+  isolation for eBPF tracing) — `container.image.repository = "claude-code"`
+  in `falco/claude-code-rules.yaml` scopes which events actually produce
+  alerts, not what Falco can technically observe. This must match on the
+  **image**, not `container.name` — container names are dynamic per
+  workspace (`derive_compose_project_name()`), but the image is always
+  `claude-code:latest` (see "Multi-instance invariants" below).
+- **Deliberately no `docker.sock` mount** (see the security-critical note
+  above) — container attribution instead relies on Falco's own
+  `/proc`+cgroup-based enrichment. If `container.image.repository` turns
+  out not to populate reliably without a runtime socket (flagged as an
+  open verification point in `falco/claude-code-rules.yaml`'s own
+  comments), the macro there falls back to `user.uid = 1000 and
+  container.id != host` instead — `claude-code` is the only service in
+  this repo that runs as UID 1000.
+- Alert delivery is entirely local: Falco's `program_output` (see
+  `falco/falco.yaml`) pipes each alert to `falco-notify.sh`, which calls
+  `notify-send` against the host's D-Bus **session bus**, bind-mounted
+  read-write into `security-monitor` at `/run/user/${HOST_UID}/bus`
+  (`HOST_UID` exported by `bin/cc-container` as `$(id -u)`). No external
+  service, no network egress needed for this at all — `security-monitor`
+  runs with `network_mode: none`. This only works with an active
+  graphical Linux session (D-Bus session bus running) on the host; it's a
+  deliberate trade-off, not a bug, for a tool meant to run on a dev
+  workstation.
+- `Dockerfile.security-monitor`, `falco/falco.yaml`, and
+  `docker-compose.yml`'s `security-monitor` block (exact `cap_add` set,
+  `program_output` config keys) were written from Falco documentation
+  knowledge, not verified against a live build (no Docker access at
+  authoring time) — see the verification comments at the top of each file
+  before relying on this in practice.
 
 ## Per-workspace `.squid-claudecode-docker` overrides
 
@@ -147,9 +203,15 @@ is scoped to that workspace's own dedicated `egress-proxy` instance (see
 ./tests/run-tests.sh --security   # just the security tier on its own
 ```
 
-See `tests/README.md` for the test layout. For anything the suite doesn't
-cover, or to debug a failure by hand, the same checks it automates are also
-useful standalone:
+See `tests/README.md` for the test layout. `tests/security/`'s checks are
+static/network-only (see "Runtime monitoring" above) — nothing in the
+automated suite actually starts `security-monitor` or verifies a Falco
+alert fires; that needs a manual check on a real Docker host with an
+active desktop session (`docker compose --profile monitoring up -d
+security-monitor`, trigger something, watch for the notification).
+
+For anything the suite doesn't cover, or to debug a failure by hand, the
+same checks it automates are also useful standalone:
 
 ```bash
 docker compose config          # check compose file syntax/interpolation
@@ -190,7 +252,8 @@ depends on:
   the `COMPOSE_PROJECT_NAME` env var and collapse every workspace back
   onto one shared project.
 - The `image: claude-code:latest` pin on the `claude-code` service (and
-  `image: claude-code-proxy-auth:latest` on `proxy-auth`) in
+  `image: claude-code-proxy-auth:latest` on `proxy-auth`,
+  `image: claude-code-security-monitor:latest` on `security-monitor`) in
   `docker-compose.yml` staying in place — without it, Compose tags the
   built image per-project (`<project>-claude-code`), causing a separate
   image build per workspace instead of one shared image.

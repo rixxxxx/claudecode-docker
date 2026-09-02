@@ -94,6 +94,55 @@ services:
       - external
     restart: unless-stopped
 
+  # Optional runtime security monitoring (eBPF-based syscall observation
+  # via Falco -- see AGENTS.md "Runtime monitoring" and README "Runtime
+  # monitoring (optional)"). Never started by default -- only via the
+  # "monitoring" Compose profile (`cc-container --monitor` or
+  # `docker compose --profile monitoring up -d`). Watches the host kernel
+  # from outside claude-code entirely -- claude-code itself gets no
+  # additional privileges from this (see AGENTS.md's exception note for
+  # exactly what's scoped to this one service).
+  #
+  # network_mode: none -- deliberately no IP networking at all. Alert
+  # delivery goes out via a bind-mounted Unix socket (the host's D-Bus
+  # session bus), not over a network; eBPF observes the host kernel
+  # directly regardless of this container's own network namespace.
+  #
+  # VERIFY (no Docker access at authoring time, see
+  # Dockerfile.security-monitor): the exact cap_add set needed for Falco's
+  # modern eBPF driver without --privileged, and whether network_mode:
+  # none is actually compatible with it -- written from documentation
+  # knowledge.
+  security-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.security-monitor
+    image: claude-code-security-monitor:latest
+    profiles:
+      - monitoring
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - SYS_PTRACE
+      - DAC_OVERRIDE
+    security_opt:
+      - apparmor:unconfined
+    network_mode: none
+    volumes:
+      - /proc:/host/proc:ro
+      - /etc:/host/etc:ro
+      # Host D-Bus session bus, for falco-notify.sh's native desktop
+      # notifications (see falco-notify.sh, falco/falco.yaml's
+      # program_output). HOST_UID is exported by bin/cc-container ($(id
+      # -u) of the invoking host user) -- falls back to 1000 (this repo's
+      # own default, non-root UID convention, see Dockerfile) if unset,
+      # e.g. when invoking docker compose directly.
+      - /run/user/${HOST_UID:-1000}/bus:/run/user/${HOST_UID:-1000}/bus
+    environment:
+      HOST_PROC: /host/proc
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${HOST_UID:-1000}/bus
+    restart: unless-stopped
+
 networks:
   internal:
     driver: bridge

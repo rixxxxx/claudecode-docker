@@ -1,0 +1,74 @@
+# Custom Falco rules scoped to this repo's claude-code container. Loaded
+# in addition to Falco's bundled default ruleset (see falco/falco.yaml's
+# rules_file). See README "Runtime monitoring (optional)" and AGENTS.md.
+#
+# Matches on container.image.repository, not container.name: this repo's
+# claude-code container names are dynamic per workspace
+# (derive_compose_project_name() in bin/cc-container), but the image is
+# always claude-code:latest (see AGENTS.md "Multi-instance invariants").
+#
+# VERIFY (no Docker access at authoring time, see Dockerfile.security-monitor):
+# whether container.image.repository actually populates without a
+# docker.sock mount (deliberately not mounted here -- see AGENTS.md
+# "Runtime monitoring"). If it doesn't resolve on a real host, replace the
+# macro condition below with `user.uid = 1000 and container.id != host`
+# (claude-code always runs as UID 1000 -- see Dockerfile -- no other
+# service in this repo does).
+
+- macro: claude_code_container
+  condition: (container.image.repository = "claude-code")
+
+- rule: Unexpected shell in claude-code
+  desc: >
+    An interactive shell was spawned inside the claude-code container.
+    Claude Code itself doesn't spawn interactive sub-shells from its own
+    code -- this is typical of a compromised postinstall hook or an
+    attempted reverse shell.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name in (bash, sh, dash, zsh, ash)
+    and not proc.pname in (claude, node)
+  output: >
+    Shell spawned in claude-code
+    (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, shell]
+
+- rule: Write attempt to workspace Squid override in claude-code
+  desc: >
+    A write was attempted against /workspace/.squid-claudecode-docker
+    inside claude-code. This path is intentionally mounted read-only (see
+    AGENTS.md "Per-workspace .squid-claudecode-docker overrides") -- a
+    write attempt here means something tried to widen its own network
+    policy from inside the sandbox. Detection-side counterpart to the hard
+    enforcement test in tests/security/test_runtime_hardening.sh.
+  condition: >
+    open_write
+    and claude_code_container
+    and fd.name startswith /workspace/.squid-claudecode-docker
+  output: >
+    Write attempt to read-only Squid override in claude-code
+    (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, filesystem]
+
+- rule: Outbound connection from claude-code not via egress-proxy
+  desc: >
+    claude-code attempted an outbound TCP connection to a port other than
+    egress-proxy's 3128. Given this repo's network topology (internal:
+    true, no default gateway -- see docker-compose.yml), such an attempt
+    should never succeed, but the attempt itself indicates code trying to
+    bypass HTTP_PROXY/HTTPS_PROXY rather than the domain allowlist being
+    insufficient -- worth knowing about either way (defense-in-depth
+    tripwire).
+  condition: >
+    (evt.type = connect and evt.dir = <)
+    and claude_code_container
+    and fd.l4proto = tcp
+    and fd.rport != 3128
+  output: >
+    Outbound connection attempt from claude-code bypassing egress-proxy
+    (dest=%fd.rip:%fd.rport command=%proc.cmdline user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, network]

@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+#
+# Optional runtime security monitoring for claude-code, via Falco
+# (eBPF-based syscall observation) + a local desktop notification relay
+# (falco-notify.sh, via the host's D-Bus session bus). Only built/started
+# via the "monitoring" Compose profile (never by default, never affects
+# claude-code's own privileges) -- see README "Runtime monitoring
+# (optional)" and AGENTS.md.
+#
+# VERIFY BEFORE RELYING ON THIS: base image tag/availability, whether apt
+# is actually the package manager in this image, and falco.yaml's
+# engine/program_output config keys were written from documentation
+# knowledge, not confirmed against a live build (no Docker access at
+# authoring time). After building, run
+# `docker compose --profile monitoring build security-monitor && docker
+# compose run --rm security-monitor falco --version` and diff
+# /etc/falco/falco.yaml's actual default against falco/falco.yaml here.
+
+FROM falcosecurity/falco-no-driver:latest
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnotify-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY falco/falco.yaml /etc/falco/falco.yaml
+COPY falco/claude-code-rules.yaml /etc/falco/rules.d/claude-code-rules.yaml
+COPY falco-notify.sh /usr/local/bin/falco-notify.sh
+RUN chmod +x /usr/local/bin/falco-notify.sh

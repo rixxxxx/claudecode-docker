@@ -1,0 +1,71 @@
+# Custom Falco config for the security-monitor sidecar (see
+# Dockerfile.security-monitor). Based on Falco's documented defaults, with
+# these changes:
+#   - engine.kind: modern_ebpf -- no kernel module build, no --privileged.
+#   - program_output: enabled, pipes each alert to falco-notify.sh (native
+#     desktop notification via the host's D-Bus session bus).
+#   - rules_file: adds claude-code-rules.yaml alongside the bundled default
+#     ruleset.
+#
+# VERIFY (no Docker access at authoring time): exact key names/structure
+# against the Falco version actually pulled at build time -- written from
+# documentation knowledge. Re-check when bumping the base image tag in
+# Dockerfile.security-monitor, similar to how bin/update-deps.sh tracks
+# other pinned versions in this repo.
+
+rules_file:
+  - /etc/falco/falco_rules.yaml
+  - /etc/falco/rules.d
+
+engine:
+  kind: modern_ebpf
+  modern_ebpf:
+    cpus_for_each_buffer: 2
+
+time_format_iso_8601: true
+
+json_output: false
+json_include_output_property: true
+
+log_stderr: true
+log_syslog: false
+log_level: info
+
+priority: debug
+
+buffered_outputs: false
+
+outputs:
+  rate: 1
+  max_burst: 1000
+
+syslog_output:
+  enabled: false
+
+file_output:
+  enabled: false
+
+stdout_output:
+  enabled: true
+
+# Pipes each alert to falco-notify.sh, which turns it into a native
+# desktop notification via the host's D-Bus session bus (see
+# docker-compose.yml's security-monitor service for the bind mount).
+program_output:
+  enabled: true
+  keep_alive: false
+  program: "/usr/local/bin/falco-notify.sh"
+
+http_output:
+  enabled: false
+
+grpc:
+  enabled: false
+
+grpc_output:
+  enabled: false
+
+metadata_download:
+  max_mb: 100
+  chunk_wait_us: 1000
+  watch_freq_sec: 1

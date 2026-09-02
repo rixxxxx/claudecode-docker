@@ -189,6 +189,11 @@ main() {
 
     export HOST_WORKSPACE="$(pwd -P)"
 
+    # Used by the optional security-monitor service (see docker-compose.yml
+    # and AGENTS.md "Runtime monitoring") to bind-mount the invoking host
+    # user's D-Bus session bus for desktop notifications.
+    export HOST_UID="$(id -u)"
+
     # Per-workspace Squid additions: mount the target workspace's own
     # .squid-claudecode-docker/ folder into the egress-proxy alongside this
     # repo's defaults. Create it here (as the invoking host user) if it
@@ -217,6 +222,27 @@ main() {
     if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
         compose_profile_args=(--profile enterprise-proxy)
         echo "==> Enterprise proxy: chaining egress-proxy through proxy-auth (${ENTERPRISE_PROXY_AUTH})"
+    fi
+
+    # --monitor is stripped out here (order-independent, works combined
+    # with --update) rather than handled inline below, since it toggles a
+    # Compose profile rather than delegating to another script. See
+    # docker-compose.yml's security-monitor service and AGENTS.md "Runtime
+    # monitoring".
+    local monitor_enabled=false
+    local remaining_args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--monitor" ]; then
+            monitor_enabled=true
+        else
+            remaining_args+=("$arg")
+        fi
+    done
+    set -- "${remaining_args[@]}"
+
+    if [ "$monitor_enabled" = true ]; then
+        compose_profile_args+=(--profile monitoring)
+        echo "==> Runtime monitoring: starting security-monitor (Falco)"
     fi
 
     if [ "${1:-}" = "--update" ]; then
