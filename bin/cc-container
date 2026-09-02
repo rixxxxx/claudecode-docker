@@ -3,65 +3,43 @@
 # drops you straight into the `claude` console inside the container.
 # Pass --update (optionally followed by --force) to run bin/update-deps.sh
 # first, e.g. `cc-container --update` or `cc-container --update --force`.
+#
+# Structured as sourceable pure functions (below) + main() (at the bottom),
+# guarded so `source bin/cc-container` (e.g. from tests/) only defines
+# functions -- no side effects -- while running it directly behaves exactly
+# as before. See tests/unit/test_render_upstream_proxy_conf.sh and
+# tests/unit/test_compose_project_name.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# docker compose auto-loads .env for its own ${...} interpolation, but this
-# script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at the bash
-# level below (to render the Squid/px config), so load it explicitly here
-# too. See README "Enterprise proxy support".
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$PROJECT_ROOT/.env"
-    set +a
-fi
-
-export HOST_WORKSPACE="$(pwd -P)"
-
-# Per-workspace Squid additions: mount the target workspace's own
-# .squid-claudecode-docker/ folder into the egress-proxy alongside this
-# repo's defaults. Create it here (as the invoking host user) if it
-# doesn't exist yet, rather than letting Docker auto-create the bind-mount
-# source — Docker would create it as root, leaving it unwritable by the
-# user for future edits. An empty folder has the same effect as the old
-# .squid-empty/ placeholder fallback (no extra domains). The
-# "-claudecode-docker" suffix keeps this unambiguous in case a workspace
-# ever has an unrelated ".squid" folder of its own for something else.
-mkdir -p "$HOST_WORKSPACE/.squid-claudecode-docker"
-export SQUID_WORKSPACE_DIR="$HOST_WORKSPACE/.squid-claudecode-docker"
-
-# Derive a stable, unique Compose project name from the workspace path so
+# Derives a stable, unique Compose project name from a workspace path so
 # each distinct host workspace gets its own containers, networks, and
 # dedicated egress-proxy (true parallelism), while repeated runs from the
 # same workspace reuse the same project instead of piling up duplicates.
 # The literal "cc-" prefix guarantees the result always starts with an
 # alnum char, satisfying Compose's ^[a-z0-9][a-z0-9_-]*$ project-name rule
-# even if the slug below ends up empty.
-_ws_slug="$(basename "$HOST_WORKSPACE" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-    | cut -c1-32)"
-_ws_hash="$(printf '%s' "$HOST_WORKSPACE" | cksum | cut -d' ' -f1)"
-export COMPOSE_PROJECT_NAME="cc-${_ws_slug:-ws}-${_ws_hash}"
-unset _ws_slug _ws_hash
-
-echo "==> Workspace:       $HOST_WORKSPACE"
-echo "==> Compose project: $COMPOSE_PROJECT_NAME"
-
-cd "$PROJECT_ROOT"
+# even if the slug ends up empty.
+derive_compose_project_name() {
+    local host_workspace="$1"
+    local slug hash
+    slug="$(basename "$host_workspace" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+        | cut -c1-32)"
+    hash="$(printf '%s' "$host_workspace" | cksum | cut -d' ' -f1)"
+    echo "cc-${slug:-ws}-${hash}"
+}
 
 # Enterprise proxy chaining (see README "Enterprise proxy support"): renders
 # .squid-upstream-proxy/{upstream.conf,px.ini} from HTTP(S)_PROXY/
-# ENTERPRISE_PROXY_AUTH in .env. Empty HTTP(S)_PROXY is a no-op (egress-proxy
-# keeps connecting directly to the internet, unchanged default behavior).
-# Set to true by render_upstream_proxy_conf() when NTLM/Kerberos auth needs
-# the proxy-auth (px) sidecar -- Basic auth doesn't, Squid's own cache_peer
-# login= handles that directly.
-NEEDS_PROXY_AUTH_SIDECAR=false
-
+# ENTERPRISE_PROXY_AUTH in .env/the environment. Empty HTTP(S)_PROXY is a
+# no-op (egress-proxy keeps connecting directly to the internet, unchanged
+# default behavior). Sets NEEDS_PROXY_AUTH_SIDECAR=true when NTLM/Kerberos
+# auth needs the proxy-auth (px) sidecar -- Basic auth doesn't, Squid's own
+# cache_peer login= handles that directly. Expects PROJECT_ROOT and
+# NEEDS_PROXY_AUTH_SIDECAR to already be set by the caller.
 render_upstream_proxy_conf() {
     local conf_dir="$PROJECT_ROOT/.squid-upstream-proxy"
     local upstream_conf="$conf_dir/upstream.conf"
@@ -139,37 +117,77 @@ render_upstream_proxy_conf() {
     fi
 }
 
-render_upstream_proxy_conf
+main() {
+    # docker compose auto-loads .env for its own ${...} interpolation, but
+    # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
+    # the bash level below (to render the Squid/px config), so load it
+    # explicitly here too. See README "Enterprise proxy support".
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        set -a
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/.env"
+        set +a
+    fi
 
-compose_profile_args=()
-if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
-    compose_profile_args=(--profile enterprise-proxy)
-    echo "==> Enterprise proxy: chaining egress-proxy through proxy-auth (${ENTERPRISE_PROXY_AUTH})"
+    export HOST_WORKSPACE="$(pwd -P)"
+
+    # Per-workspace Squid additions: mount the target workspace's own
+    # .squid-claudecode-docker/ folder into the egress-proxy alongside this
+    # repo's defaults. Create it here (as the invoking host user) if it
+    # doesn't exist yet, rather than letting Docker auto-create the
+    # bind-mount source — Docker would create it as root, leaving it
+    # unwritable by the user for future edits. An empty folder has the same
+    # effect as the old .squid-empty/ placeholder fallback (no extra
+    # domains). The "-claudecode-docker" suffix keeps this unambiguous in
+    # case a workspace ever has an unrelated ".squid" folder of its own for
+    # something else.
+    mkdir -p "$HOST_WORKSPACE/.squid-claudecode-docker"
+    export SQUID_WORKSPACE_DIR="$HOST_WORKSPACE/.squid-claudecode-docker"
+
+    export COMPOSE_PROJECT_NAME="$(derive_compose_project_name "$HOST_WORKSPACE")"
+
+    echo "==> Workspace:       $HOST_WORKSPACE"
+    echo "==> Compose project: $COMPOSE_PROJECT_NAME"
+
+    cd "$PROJECT_ROOT"
+
+    NEEDS_PROXY_AUTH_SIDECAR=false
+    render_upstream_proxy_conf
+
+    compose_profile_args=()
+    if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
+        compose_profile_args=(--profile enterprise-proxy)
+        echo "==> Enterprise proxy: chaining egress-proxy through proxy-auth (${ENTERPRISE_PROXY_AUTH})"
+    fi
+
+    if [ "${1:-}" = "--update" ]; then
+        shift
+        "$SCRIPT_DIR/update-deps.sh" "$@"
+    fi
+
+    docker compose "${compose_profile_args[@]}" up -d
+
+    set +e
+    docker compose exec claude-code claude
+    claude_status=$?
+    set -e
+
+    if [ -t 0 ]; then
+        read -r -p "Close containers for this workspace (claude-code + egress-proxy)? [y/N] " reply
+        case "$reply" in
+            y|Y|yes|Yes)
+                echo "==> Stopping and removing containers..."
+                docker compose "${compose_profile_args[@]}" down
+                ;;
+            *)
+                echo "==> Leaving containers running. Stop them later with: docker compose down"
+                ;;
+        esac
+    fi
+
+    exit "$claude_status"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
 fi
-
-if [ "${1:-}" = "--update" ]; then
-    shift
-    "$SCRIPT_DIR/update-deps.sh" "$@"
-fi
-
-docker compose "${compose_profile_args[@]}" up -d
-
-set +e
-docker compose exec claude-code claude
-claude_status=$?
-set -e
-
-if [ -t 0 ]; then
-    read -r -p "Close containers for this workspace (claude-code + egress-proxy)? [y/N] " reply
-    case "$reply" in
-        y|Y|yes|Yes)
-            echo "==> Stopping and removing containers..."
-            docker compose "${compose_profile_args[@]}" down
-            ;;
-        *)
-            echo "==> Leaving containers running. Stop them later with: docker compose down"
-            ;;
-    esac
-fi
-
-exit "$claude_status"

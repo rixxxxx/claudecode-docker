@@ -114,7 +114,20 @@ is scoped to that workspace's own dedicated `egress-proxy` instance (see
 
 ## Validating changes
 
-There's no test suite. Validation happens by actually building/starting:
+```bash
+./tests/run-tests.sh          # unit tests: fast, no Docker (bash -n, shellcheck if
+                                #   installed, render_upstream_proxy_conf()/
+                                #   derive_compose_project_name() logic, install.sh/
+                                #   uninstall.sh against a fakehome sandbox)
+./tests/run-tests.sh --all    # + integration tests: needs Docker, builds/starts the
+                                #   real stack under its own throwaway Compose project
+                                #   and checks the security-critical invariants below
+                                #   (non-root, domain allowlist, network isolation)
+```
+
+See `tests/README.md` for the test layout. For anything the suite doesn't
+cover, or to debug a failure by hand, the same checks it automates are also
+useful standalone:
 
 ```bash
 docker compose config          # check compose file syntax/interpolation

@@ -79,6 +79,7 @@ behind it.)
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
 | `certs/`               | Optional enterprise root CA(s) (`*.crt`), trusted at image build time |
 | `.env.example`         | Template for `.env` — API key, enterprise proxy settings       |
+| `tests/`               | Test suite — see "Testing" below and `tests/README.md`         |
 | `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell (container PID 1) |
 | `.dockerignore`        | Excludes secrets, node_modules, .git etc. from the build context |
 | `.gitignore`           | Excludes secrets, credentials, build artifacts from the repo   |
@@ -388,6 +389,15 @@ don't read the system trust store by default — handled via
 - This repo doesn't alter your host's own CA trust store (e.g. for
   `bin/update-deps.sh`'s direct `curl` calls) — that must already be set up
   outside this repo if your host itself sits behind TLS interception.
+
+## Testing
+
+```bash
+./tests/run-tests.sh          # unit tests: fast, no Docker
+./tests/run-tests.sh --all    # + integration tests: needs Docker, builds/starts the stack
+```
+
+See `tests/README.md` for what each tier covers.
 
 ## Troubleshooting
 
