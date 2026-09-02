@@ -4,26 +4,37 @@
 #
 #   ./tests/run-tests.sh                # unit tests only (fast, no Docker)
 #   ./tests/run-tests.sh --integration  # integration tests only (needs Docker)
-#   ./tests/run-tests.sh --all          # both
+#   ./tests/run-tests.sh --security     # security tests only (needs Docker)
+#   ./tests/run-tests.sh --all          # unit + integration + security
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
-mode="unit"
+run_unit=false
+run_integration=false
+run_security=false
+any_explicit=false
+
 for arg in "$@"; do
     case "$arg" in
-        --integration) mode="integration" ;;
-        --all) mode="all" ;;
+        --integration) run_integration=true; any_explicit=true ;;
+        --security) run_security=true; any_explicit=true ;;
+        --all) run_unit=true; run_integration=true; run_security=true; any_explicit=true ;;
         -h|--help)
-            echo "Usage: $0 [--integration|--all]"
+            echo "Usage: $0 [--integration] [--security] [--all]"
             exit 0
             ;;
         *)
-            echo "Usage: $0 [--integration|--all]" >&2
+            echo "Usage: $0 [--integration] [--security] [--all]" >&2
             exit 1
             ;;
     esac
 done
+
+# No tier flags given at all -- default to unit tests only (fast, no Docker).
+if [ "$any_explicit" = false ]; then
+    run_unit=true
+fi
 
 # run_suite <dir> <label> -- runs every tests/*/test_*.sh in <dir> as its
 # own subprocess (each file owns its own pass/fail counters via
@@ -46,21 +57,31 @@ run_suite() {
     [ "$failed" -eq 0 ]
 }
 
+if [ "$run_integration" = true ] || [ "$run_security" = true ]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Error: --integration/--security/--all require docker, which isn't available here." >&2
+        exit 1
+    fi
+fi
+
 overall_ok=true
 
-if [ "$mode" = "unit" ] || [ "$mode" = "all" ]; then
+if [ "$run_unit" = true ]; then
     if ! run_suite "$SCRIPT_DIR/unit" "Unit tests"; then
         overall_ok=false
     fi
 fi
 
-if [ "$mode" = "integration" ] || [ "$mode" = "all" ]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "Error: --integration/--all requires docker, which isn't available here." >&2
-        exit 1
-    fi
+if [ "$run_integration" = true ]; then
     echo
     if ! run_suite "$SCRIPT_DIR/integration" "Integration tests"; then
+        overall_ok=false
+    fi
+fi
+
+if [ "$run_security" = true ]; then
+    echo
+    if ! run_suite "$SCRIPT_DIR/security" "Security tests"; then
         overall_ok=false
     fi
 fi

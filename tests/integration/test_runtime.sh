@@ -16,12 +16,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../lib/assert.sh"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/_lib.sh"
+source "$SCRIPT_DIR/../lib/docker_lib.sh"
 
-PROJECT="$(integration_project_name)"
+PROJECT="$(docker_test_project_name)"
 COMPOSE=(docker compose -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT")
 
-cleanup() { integration_cleanup "$PROJECT"; }
+cleanup() { docker_test_cleanup "$PROJECT"; }
 trap cleanup EXIT
 
 echo "  (using COMPOSE_PROJECT_NAME=$PROJECT -- can take a while on first run)"

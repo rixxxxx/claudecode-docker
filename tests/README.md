@@ -7,12 +7,16 @@ for the assertion helpers used throughout.
 ```bash
 ./run-tests.sh               # unit tests only (fast, no Docker)
 ./run-tests.sh --integration # integration tests only (needs Docker)
-./run-tests.sh --all         # both
+./run-tests.sh --security    # security tests only (needs Docker)
+./run-tests.sh --all         # unit + integration + security
 ```
 
-Each `test_*.sh` file is independently executable (`./unit/test_foo.sh`)
-and owns its own pass/fail counters — `run-tests.sh` just runs every file
-in a tier and aggregates their exit codes.
+Tier flags are additive (`--integration --security` runs both, skips
+unit); with no flags at all, only unit tests run. Each `test_*.sh` file is
+independently executable (`./unit/test_foo.sh`) and owns its own pass/fail
+counters — `run-tests.sh` just runs every file in a tier and aggregates
+their exit codes. `tests/lib/docker_lib.sh` has the shared
+project-name/cleanup helpers used by both `integration/` and `security/`.
 
 ## unit/ — fast, no Docker
 
@@ -54,3 +58,24 @@ containers/networks started by an actual `cc-container` session.
 Not covered: an actual NTLM/Kerberos handshake against a real corporate
 proxy (not realistically automatable without one) — see `README.md`
 "Enterprise proxy support" for the manual verification note on `px`.
+
+## security/ — needs Docker, hardening/adversarial checks
+
+Same cleanup pattern as `integration/`. Focused on the specific risks in
+this repo (container escape, network exfiltration, trust-boundary
+enforcement) rather than general functionality.
+
+- `test_static_hardening.sh` — no containers started, just `docker compose
+  config` (with the `enterprise-proxy` profile) and Dockerfile greps: no
+  service is `privileged`, none adds Linux capabilities (`cap_add`), none
+  mounts the Docker socket (even read-only, that's effectively
+  root-equivalent host access — the Docker API has no granular read/write
+  distinction), and neither `Dockerfile` does a full-context `COPY . .`/
+  `ADD . .` that could bypass `.dockerignore`'s exclusions.
+- `test_runtime_hardening.sh` — starts the stack and probes specific
+  bypass attempts: a direct connection from `claude-code` with
+  `HTTP_PROXY`/`HTTPS_PROXY` explicitly unset and `--noproxy '*'` (actively
+  trying to go around `egress-proxy`) must still have no route out at all;
+  writing into the read-only `.squid-claudecode-docker` mount inside
+  `claude-code` must fail; Squid must reject CONNECT to a non-80/443 port
+  even for an otherwise-allowed domain.

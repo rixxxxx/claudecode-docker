@@ -394,7 +394,8 @@ don't read the system trust store by default — handled via
 
 ```bash
 ./tests/run-tests.sh          # unit tests: fast, no Docker
-./tests/run-tests.sh --all    # + integration tests: needs Docker, builds/starts the stack
+./tests/run-tests.sh --all    # + integration + security tests: needs Docker, builds/
+                               #   starts the stack and probes hardening/bypass attempts
 ```
 
 See `tests/README.md` for what each tier covers.

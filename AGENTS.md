@@ -115,14 +115,20 @@ is scoped to that workspace's own dedicated `egress-proxy` instance (see
 ## Validating changes
 
 ```bash
-./tests/run-tests.sh          # unit tests: fast, no Docker (bash -n, shellcheck if
-                                #   installed, render_upstream_proxy_conf()/
-                                #   derive_compose_project_name() logic, install.sh/
-                                #   uninstall.sh against a fakehome sandbox)
-./tests/run-tests.sh --all    # + integration tests: needs Docker, builds/starts the
-                                #   real stack under its own throwaway Compose project
-                                #   and checks the security-critical invariants below
-                                #   (non-root, domain allowlist, network isolation)
+./tests/run-tests.sh              # unit tests: fast, no Docker (bash -n, shellcheck if
+                                    #   installed, render_upstream_proxy_conf()/
+                                    #   derive_compose_project_name() logic, install.sh/
+                                    #   uninstall.sh against a fakehome sandbox)
+./tests/run-tests.sh --all        # + integration tests: needs Docker, builds/starts the
+                                    #   real stack under its own throwaway Compose project
+                                    #   and checks the security-critical invariants below
+                                    #   (non-root, domain allowlist, network isolation)
+                                    # + security tests: hardening/adversarial checks --
+                                    #   no privileged/cap_add/docker.sock on any service,
+                                    #   no network route out even bypassing egress-proxy
+                                    #   deliberately, .squid-claudecode-docker stays
+                                    #   read-only, Squid rejects non-80/443 CONNECT
+./tests/run-tests.sh --security   # just the security tier on its own
 ```
 
 See `tests/README.md` for the test layout. For anything the suite doesn't

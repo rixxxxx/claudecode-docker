@@ -16,8 +16,9 @@ SCRIPTS=(
     "$REPO_ROOT/bin/update-deps.sh"
     "$REPO_ROOT/tests/run-tests.sh"
     "$REPO_ROOT/tests/lib/assert.sh"
+    "$REPO_ROOT/tests/lib/docker_lib.sh"
 )
-for f in "$REPO_ROOT"/tests/unit/test_*.sh "$REPO_ROOT"/tests/integration/test_*.sh; do
+for f in "$REPO_ROOT"/tests/unit/test_*.sh "$REPO_ROOT"/tests/integration/test_*.sh "$REPO_ROOT"/tests/security/test_*.sh; do
     [ -e "$f" ] || continue
     SCRIPTS+=("$f")
 done
