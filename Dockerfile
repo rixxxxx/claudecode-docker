@@ -132,8 +132,9 @@ ARG CLAUDE_CODE_VERSION=2.1.261
 
 # Install ClaudeCode via npm (more reliable than curl install script).
 # The secret mounts work the same way post-USER-switch: BuildKit injects the
-# env var for this RUN's process directly, independent of the RUN's UID (see
-# AGENTS.md "Enterprise proxy support" -- verify on first real build).
+# env var for this RUN's process directly, independent of the RUN's UID --
+# confirmed by a live build with HTTP_PROXY/HTTPS_PROXY secrets set
+# (2026-09-04, see AGENTS.md "Enterprise proxy support").
 RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
     --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
     --mount=type=secret,id=no_proxy,env=NO_PROXY \
