@@ -128,7 +128,7 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # here rather than at the top of the file so bumping it only invalidates this
 # layer and everything below -- not the apt/Node layers above -- mirroring the
 # NODE_VERSION pattern above.
-ARG CLAUDE_CODE_VERSION=2.1.259
+ARG CLAUDE_CODE_VERSION=2.1.261
 
 # Install ClaudeCode via npm (more reliable than curl install script).
 # The secret mounts work the same way post-USER-switch: BuildKit injects the
