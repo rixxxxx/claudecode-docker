@@ -72,9 +72,15 @@ code:
 - `bin/cc-container` reads `HTTP_PROXY`/`HTTPS_PROXY`/`ENTERPRISE_PROXY_AUTH`
   from `.env` (loaded explicitly there — Compose's own `.env` auto-load
   doesn't extend to this script) and renders
-  `.squid-upstream-proxy/{upstream.conf,px.ini}` before `docker compose up`.
-  Regenerated every run, gitignored (may contain credentials), never
-  committed.
+  `.squid-upstream-proxy/{upstream.conf,px.ini,px.env}` before `docker
+  compose up`. Regenerated every run, gitignored (may contain credentials),
+  never committed.
+- `px.ini` never gets a `password` key — confirmed against a live `px
+  --help` that px has none (only `--password`, which writes to the OS
+  keyring interactively, or the `PX_PASSWORD` env var). The password, when
+  set, is rendered separately as `px.env` (`PX_PASSWORD=...`, chmod 600,
+  same gitignored/regenerated-every-run treatment) and sourced by
+  `proxy-auth-entrypoint.sh` before it execs `px`.
 - Basic auth: `upstream.conf` gets a `cache_peer ... login=user:pass`
   directly — no sidecar needed.
 - NTLM/Kerberos: Squid can't do this itself, so `upstream.conf` instead
@@ -102,10 +108,9 @@ code:
 - Both Dockerfiles also trust an optional `certs/*.crt` enterprise CA at
   build time, before their non-root `USER` switch — the only way to get CA
   trust without granting runtime root (see the point above).
-- The `proxy-auth-entrypoint.sh` script's exact `px` invocation was written
-  from documentation knowledge, not verified live (no network access at
-  authoring time) — see the verification comment at its top before relying
-  on NTLM/Kerberos in production.
+- The `proxy-auth-entrypoint.sh` script's `px` invocation (`--config`, and
+  the `proxy:{server,listen,port,gateway,allow,username}=` keys rendered
+  into `px.ini`) has been verified against a live `px --help` (px v0.12.0).
 
 ## Runtime monitoring
 

@@ -71,7 +71,8 @@ render_upstream_proxy_conf() {
     conf_dir="$(ensure_squid_upstream_dir)"
     local upstream_conf="$conf_dir/upstream.conf"
     local px_ini="$conf_dir/px.ini"
-    rm -f "$px_ini"
+    local px_env="$conf_dir/px.env"
+    rm -f "$px_ini" "$px_env"
 
     # Compose falls back to ./.squid-empty (the same tracked placeholder
     # used for SQUID_WORKSPACE_DIR) when this isn't exported -- e.g. when
@@ -140,15 +141,26 @@ render_upstream_proxy_conf() {
             if [ -n "$proxy_user" ]; then
                 echo "username = ${proxy_user}"
             fi
-            if [ -n "$proxy_pass" ]; then
-                echo "password = ${proxy_pass}"
-            fi
             echo "listen = 0.0.0.0"
             echo "port = 3128"
             echo "gateway = 1"
             echo "allow = 0.0.0.0/0"
         } > "$px_ini"
         chmod 600 "$px_ini"
+
+        # px has no `password` key for px.ini -- confirmed against a real
+        # `px --help` (see AGENTS.md "Enterprise proxy support"): it only
+        # accepts a password via --password (interactive, writes to the OS
+        # keyring) or the PX_PASSWORD env var. Rendered here as a separate
+        # chmod-600 file instead of embedding it in px.ini, where px would
+        # have silently ignored it -- proxy-auth-entrypoint.sh sources this
+        # before exec'ing px.
+        {
+            if [ -n "$proxy_pass" ]; then
+                echo "PX_PASSWORD=${proxy_pass}"
+            fi
+        } > "$px_env"
+        chmod 600 "$px_env"
     fi
 }
 

@@ -87,6 +87,7 @@ services:
       - enterprise-proxy
     volumes:
       - ./.squid-upstream-proxy/px.ini:/etc/px/px.ini:ro
+      - ./.squid-upstream-proxy/px.env:/etc/px/px.env:ro
       - ${KRB5_CCNAME_PATH:-/dev/null}:/tmp/krb5cc:ro
       - ${KRB5_CONFIG_PATH:-/dev/null}:/etc/krb5.conf:ro
     networks:

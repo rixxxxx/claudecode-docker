@@ -381,7 +381,7 @@ don't read the system trust store by default — handled via
 **Limitations:**
 - Only Basic, NTLM, and Kerberos are supported for the corporate proxy
   itself (via Squid `cache_peer` or the `px` sidecar).
-- Proxy passwords must not contain characters that break `px.ini`/Squid
+- Proxy passwords must not contain characters that break `px.env`/Squid
   config syntax (e.g. unescaped `#`).
 - `bin/update-deps.sh --update`/`cc-container --update` doesn't currently
   rebuild/recreate the `proxy-auth` sidecar automatically — rebuild it

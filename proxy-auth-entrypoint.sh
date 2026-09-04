@@ -3,15 +3,23 @@
 # px (genotrance/px) against the config bin/cc-container rendered into
 # .squid-upstream-proxy/px.ini, mounted read-only at /etc/px/px.ini.
 #
-# VERIFY BEFORE RELYING ON THIS: the px.ini keys this script/its config
-# rely on were written from documentation knowledge, not confirmed against
-# a live `px --help` (no network access at authoring time). After building,
-# run `docker compose run --rm proxy-auth px --help` and adjust this script
-# and the px.ini rendering in bin/cc-container if flags/keys differ.
+# Verified against a live `px --help` (px v0.12.0): --config, and the
+# proxy/listen/port/gateway/allow/username keys rendered into px.ini by
+# bin/cc-container's render_upstream_proxy_conf(), all match. px has no
+# `password` key for px.ini though -- only --password (interactive
+# keyring) or the PX_PASSWORD env var -- so the password, when set, is
+# rendered separately as px.env and sourced below instead.
 set -euo pipefail
 
 if [ -f /tmp/krb5cc ]; then
     export KRB5CCNAME="FILE:/tmp/krb5cc"
 fi
 
-exec px --config /etc/px/px.ini
+if [ -f /etc/px/px.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source /etc/px/px.env
+    set +a
+fi
+
+exec px --config /etc/px/px.ini "$@"
