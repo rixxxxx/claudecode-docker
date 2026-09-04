@@ -72,7 +72,13 @@ render_upstream_proxy_conf() {
     local upstream_conf="$conf_dir/upstream.conf"
     local px_ini="$conf_dir/px.ini"
     local px_env="$conf_dir/px.env"
-    rm -f "$px_ini" "$px_env"
+    # -rf, not -f: if `docker compose run`/`up` ever touched these mount
+    # targets before this function first rendered them as real files,
+    # Docker auto-creates the bind-mount source as an (empty) directory --
+    # same footgun as ensure_squid_upstream_dir() above, just one level
+    # deeper. Safe to blow away unconditionally: both paths are exclusively
+    # owned/rendered by this function.
+    rm -rf "$px_ini" "$px_env"
 
     # Compose falls back to ./.squid-empty (the same tracked placeholder
     # used for SQUID_WORKSPACE_DIR) when this isn't exported -- e.g. when
