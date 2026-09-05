@@ -10,6 +10,15 @@
 # since bumping those already busts just their own layer onward. Major
 # version bumps (Ubuntu, Node) are only ever reported, never applied
 # automatically -- see README.md "Updating dependencies".
+#
+# When the current .env configures an enterprise (NTLM/Kerberos) proxy, also
+# checks proxy-auth's (px sidecar) upstream sources -- python:3.12-slim base
+# image and the px-proxy pip package, neither pinned in Dockerfile.proxy-auth
+# -- and rebuilds it with --pull --no-cache if either moved (or --force).
+# Otherwise (or when no enterprise proxy is configured) sync_proxy_auth_sidecar
+# (bin/cc-container) still does a plain cached rebuild/cleanup pass so local
+# Dockerfile.proxy-auth/entrypoint edits and .env on/off toggles are always
+# picked up, independent of upstream drift.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -31,8 +40,14 @@ fi
 # compose build`/`up -d` calls below pick up HTTP_PROXY/HTTPS_PROXY/NO_PROXY
 # via BuildKit secrets the same way cc-container itself does -- see
 # AGENTS.md "Enterprise proxy support" for why this isn't build.args.
+# Also reuses render_upstream_proxy_conf() to learn whether the current
+# .env configures an enterprise proxy (NEEDS_PROXY_AUTH_SIDECAR) -- this
+# script is a documented standalone entry point (see the COMPOSE_PROJECT_NAME
+# check below), so it can't just inherit that from cc-container's main().
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/cc-container"
+NEEDS_PROXY_AUTH_SIDECAR=false
+render_upstream_proxy_conf
 render_build_secret_files
 
 if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
@@ -211,11 +226,63 @@ if [ "$FORCE" = true ]; then
     CACHE_SAFE=false
 fi
 
+# --- 3b. proxy-auth (px) upstream check ----------------------------------
+# Only relevant when the current .env actually configures an enterprise
+# (NTLM/Kerberos) proxy -- see render_upstream_proxy_conf() above. Neither
+# the python:3.12-slim base image nor the px-proxy pip package are
+# version-pinned in Dockerfile.proxy-auth, so (like ubuntu/gh/rtk above)
+# their layers never invalidate on their own and need an explicit
+# --no-cache rebuild when something moved upstream.
+PROXY_AUTH_REBUILD_REASONS=()
+if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
+    echo "==> Checking proxy-auth (px) upstream sources (python base image, px-proxy pip package)..."
+
+    PYTHON_BASE_BEFORE="$(image_id python:3.12-slim)"
+    docker pull -q python:3.12-slim >/dev/null 2>&1 || true
+    PYTHON_BASE_AFTER="$(image_id python:3.12-slim)"
+    if [ -z "$PYTHON_BASE_BEFORE" ] || [ "$PYTHON_BASE_BEFORE" != "$PYTHON_BASE_AFTER" ]; then
+        PROXY_AUTH_REBUILD_REASONS+=("python:3.12-slim base image has a newer layer available")
+    fi
+
+    PX_CURRENT=""
+    if docker image inspect claude-code-proxy-auth:latest >/dev/null 2>&1; then
+        PX_CURRENT="$(docker run --rm --entrypoint pip claude-code-proxy-auth:latest show px-proxy 2>/dev/null | grep '^Version:' | awk '{print $2}')" || PX_CURRENT=""
+    fi
+    PX_LATEST="$(curl -fsSL -m 10 https://pypi.org/pypi/px-proxy/json 2>/dev/null | grep -o '"version":"[0-9.]*"' | head -1 | cut -d'"' -f4 || echo "")"
+    if [ -n "$PX_LATEST" ] && [ -n "$PX_CURRENT" ] && [ "$PX_LATEST" != "$PX_CURRENT" ]; then
+        PROXY_AUTH_REBUILD_REASONS+=("px-proxy (pip) ${PX_CURRENT} -> ${PX_LATEST}")
+    fi
+
+    if [ "$FORCE" = true ]; then
+        PROXY_AUTH_REBUILD_REASONS+=("--force requested")
+    fi
+
+    if [ "${#PROXY_AUTH_REBUILD_REASONS[@]}" -gt 0 ]; then
+        echo ""
+        echo "==> proxy-auth (px) rebuild needed:"
+        for reason in "${PROXY_AUTH_REBUILD_REASONS[@]}"; do
+            echo "  - $reason"
+        done
+        docker compose --profile enterprise-proxy build --pull --no-cache proxy-auth
+    fi
+fi
+
+# Covers both directions regardless of upstream drift above: plain cached
+# rebuild (picks up local Dockerfile.proxy-auth/entrypoint/certs edits) when
+# enterprise-proxy is configured, or stopping a leftover sidecar + recreating
+# egress-proxy when it just got turned off in .env. See bin/cc-container.
+sync_proxy_auth_sidecar
+
+compose_profile_args=()
+if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
+    compose_profile_args=(--profile enterprise-proxy)
+fi
+
 if [ "${#REBUILD_REASONS[@]}" -eq 0 ]; then
     echo ""
     echo "==> Everything is already up to date (ubuntu, egress-proxy, gh, node, npm claude-code, rtk)."
     echo "==> Skipping image rebuild. Making sure containers are up..."
-    docker compose up -d
+    docker compose "${compose_profile_args[@]}" up -d
     if [ -n "$MAJOR_UPGRADES" ]; then
         echo ""
         echo "Available major upgrades (NOT applied automatically):"
@@ -245,7 +312,7 @@ else
 fi
 
 echo "==> Recreating containers..."
-docker compose up -d --force-recreate
+docker compose "${compose_profile_args[@]}" up -d --force-recreate
 
 # --- 5. capture "after" state --------------------------------------------
 

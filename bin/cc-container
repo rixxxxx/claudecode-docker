@@ -193,6 +193,55 @@ render_build_secret_files() {
     export NO_PROXY_SECRET_FILE="$conf_dir/no_proxy.secret"
 }
 
+# sync_proxy_auth_sidecar -- keeps the proxy-auth (px) sidecar in sync with
+# the current enterprise-proxy configuration. Called from both main() below
+# and update-deps.sh (standalone entry point), so both ways of running this
+# repo behave the same regardless of whether .env currently configures an
+# enterprise proxy or not.
+#
+# NEEDS_PROXY_AUTH_SIDECAR=true: does a plain cached `docker compose build`
+# for proxy-auth so it always picks up local Dockerfile.proxy-auth/
+# entrypoint/certs edits -- Docker's own layer cache makes this a no-op
+# when nothing changed (confirmed: this is what was missing when
+# `docker compose up -d proxy-auth` alone kept running a 9-hour-old image
+# after the entrypoint's --config flag was fixed). The `up -d` that follows
+# then recreates the container automatically if the build produced a new
+# image ID -- but px.ini/px.env are bind-mounted by host path, so editing
+# just their *content* (e.g. a rotated corporate-proxy password) doesn't
+# change the mount spec Compose hashes to decide whether a recreate is
+# needed, and px itself only reads them once at startup
+# (proxy-auth-entrypoint.sh). So if proxy-auth is already running, restart
+# it explicitly -- same container, same mounts, but the entrypoint re-runs
+# and re-reads the current file contents. Cheaper than --force-recreate and
+# doesn't depend on Compose noticing anything changed.
+#
+# NEEDS_PROXY_AUTH_SIDECAR=false: a leftover proxy-auth container from an
+# earlier enterprise-mode session is stopped/removed and egress-proxy is
+# force-recreated. Without this, `up -d` without --profile enterprise-proxy
+# leaves a still-running proxy-auth container untouched (Compose doesn't
+# stop containers for profiles that simply aren't requested), and
+# egress-proxy keeps its old in-memory Squid config chained through it --
+# so clearing HTTP_PROXY/ENTERPRISE_PROXY_AUTH from .env wouldn't actually
+# take effect until a manual restart.
+#
+# Expects PROJECT_ROOT and NEEDS_PROXY_AUTH_SIDECAR to already be set by
+# the caller (see render_upstream_proxy_conf() above).
+sync_proxy_auth_sidecar() {
+    if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
+        echo "==> Rebuilding proxy-auth (px) image (cached -- picks up local Dockerfile.proxy-auth/entrypoint/certs changes)..."
+        docker compose --profile enterprise-proxy build proxy-auth
+
+        if [ -n "$(docker compose --profile enterprise-proxy ps -q proxy-auth 2>/dev/null)" ]; then
+            echo "==> Restarting proxy-auth so it re-reads px.ini/px.env..."
+            docker compose --profile enterprise-proxy restart proxy-auth
+        fi
+    elif [ -n "$(docker compose --profile enterprise-proxy ps -q proxy-auth 2>/dev/null)" ]; then
+        echo "==> Enterprise proxy no longer configured -- stopping leftover proxy-auth sidecar and recreating egress-proxy..."
+        docker compose --profile enterprise-proxy rm -s -f proxy-auth
+        docker compose up -d --force-recreate egress-proxy
+    fi
+}
+
 main() {
     # docker compose auto-loads .env for its own ${...} interpolation, but
     # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
@@ -267,6 +316,8 @@ main() {
         shift
         "$SCRIPT_DIR/update-deps.sh" "$@"
     fi
+
+    sync_proxy_auth_sidecar
 
     docker compose "${compose_profile_args[@]}" up -d
 
