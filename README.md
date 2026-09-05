@@ -383,9 +383,13 @@ don't read the system trust store by default — handled via
   itself (via Squid `cache_peer` or the `px` sidecar).
 - Proxy passwords must not contain characters that break `px.env`/Squid
   config syntax (e.g. unescaped `#`).
-- `bin/update-deps.sh --update`/`cc-container --update` doesn't currently
-  rebuild/recreate the `proxy-auth` sidecar automatically — rebuild it
-  manually (`docker compose build proxy-auth`) if its dependencies change.
+- `cc-container`/`bin/update-deps.sh --update` keep the `proxy-auth`
+  sidecar in sync automatically: a cached rebuild picks up local
+  `Dockerfile.proxy-auth`/`proxy-auth-entrypoint.sh`/`certs/` edits every
+  run, `--update` additionally checks `python:3.12-slim` and the
+  `px-proxy` pip package upstream and forces `--no-cache` if either moved,
+  and the sidecar is restarted (or torn down, if the corporate proxy was
+  removed from `.env`) so it always reflects the current config.
 - The **Docker daemon's own** proxy configuration (needed to pull the
   `ubuntu`/`ubuntu/squid`/`python` base images in the first place) is a
   host/OS-level prerequisite this repo doesn't configure — see
