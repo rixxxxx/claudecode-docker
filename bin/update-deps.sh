@@ -112,10 +112,6 @@ egress_proxy_digest() {
     [ -n "$cid" ] && docker inspect --format='{{.Image}}' "$cid" 2>/dev/null || echo "n/a"
 }
 
-image_id() {
-    docker image inspect "$1" --format='{{.Id}}' 2>/dev/null || echo ""
-}
-
 ver_of() {
     # $1 = version blob (BEFORE), $2 = key
     echo "$1" | grep "^${2}=" | cut -d= -f2- || echo "n/a"
@@ -272,6 +268,13 @@ fi
 # enterprise-proxy is configured, or stopping a leftover sidecar + recreating
 # egress-proxy when it just got turned off in .env. See bin/cc-container.
 sync_proxy_auth_sidecar
+
+# Same cached-rebuild treatment for the optional security-monitor (Falco)
+# sidecar -- keeps it in sync with local Dockerfile.security-monitor/
+# falco/*.yaml/falco-notify.sh edits regardless of whether --monitor is
+# passed to this particular `cc-container --update` invocation, so it's
+# already current the next time --monitor is used. See bin/cc-container.
+sync_security_monitor_sidecar
 
 compose_profile_args=()
 if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then

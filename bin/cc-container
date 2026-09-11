@@ -242,6 +242,51 @@ sync_proxy_auth_sidecar() {
     fi
 }
 
+# image_id -- current image ID for a tag, or empty if it doesn't exist
+# locally. Shared helper (originally update-deps.sh-local): used there for
+# the ubuntu/python base-image drift checks, and here by
+# sync_security_monitor_sidecar to detect whether a build actually produced
+# a new image before deciding to disrupt a running container over it.
+image_id() {
+    docker image inspect "$1" --format='{{.Id}}' 2>/dev/null || echo ""
+}
+
+# sync_security_monitor_sidecar -- keeps the optional security-monitor
+# (Falco) sidecar image in sync with local edits to
+# Dockerfile.security-monitor, falco/*.yaml, and falco-notify.sh. Called
+# from update-deps.sh (i.e. `cc-container --update`) so "everything is up
+# to date" also covers this sidecar, not just claude-code/proxy-auth -- see
+# AGENTS.md "Runtime monitoring". Same reasoning as
+# sync_proxy_auth_sidecar's build above: a plain cached `docker compose
+# build` is a no-op when nothing changed and picks up local edits when
+# something did, via Docker's own layer-checksum cache invalidation -- no
+# custom diffing needed. Confirmed necessary on a real host (2026-09-11):
+# cc-container --monitor never called build at all, only up -d, so a
+# rebuilt Dockerfile.security-monitor/falco.yaml silently kept running the
+# stale image until a manual `docker compose build --no-cache
+# security-monitor`.
+#
+# Only force-recreates a running security-monitor if the build actually
+# produced a new image ID -- otherwise every `--update` would restart Falco
+# (losing a few seconds of monitoring coverage) even when nothing changed,
+# since `docker compose build` runs unconditionally every time regardless
+# of whether it was a cache-hit no-op.
+sync_security_monitor_sidecar() {
+    local image_before image_after
+    image_before="$(image_id claude-code-security-monitor:latest)"
+
+    echo "==> Rebuilding security-monitor (Falco) image (cached -- picks up local Dockerfile.security-monitor/falco/*.yaml/falco-notify.sh changes)..."
+    docker compose --profile monitoring build security-monitor
+
+    image_after="$(image_id claude-code-security-monitor:latest)"
+
+    if [ "$image_before" != "$image_after" ] \
+        && [ -n "$(docker compose --profile monitoring ps -q security-monitor 2>/dev/null)" ]; then
+        echo "==> security-monitor image changed -- recreating so it picks up the new image..."
+        docker compose --profile monitoring up -d --force-recreate security-monitor
+    fi
+}
+
 main() {
     # docker compose auto-loads .env for its own ${...} interpolation, but
     # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
