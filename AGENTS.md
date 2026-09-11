@@ -133,40 +133,144 @@ user-facing explanation. Adds `security-monitor` (Falco, eBPF-based
 syscall observation) watching `claude-code` **from the host kernel**,
 entirely outside the container — this is a detection layer for behavior
 the network allowlist can't see (e.g. exfiltration via an already-allowed
-domain), not a replacement for it. Mechanics, for anyone touching this
-code:
+domain), not a replacement for it. Verified end-to-end against a live
+build (Falco 0.39.2) on 2026-09-11 — rule matching, live stdout logging,
+and desktop notification all confirmed working. Mechanics, for anyone
+touching this code:
 
-- Falco's eBPF probe sees syscalls host-wide by design (no namespace
-  isolation for eBPF tracing) — `container.image.repository = "claude-code"`
-  in `falco/claude-code-rules.yaml` scopes which events actually produce
-  alerts, not what Falco can technically observe. This must match on the
-  **image**, not `container.name` — container names are dynamic per
-  workspace (`derive_compose_project_name()`), but the image is always
-  `claude-code:latest` (see "Multi-instance invariants" below).
-- **Deliberately no `docker.sock` mount** (see the security-critical note
-  above) — container attribution instead relies on Falco's own
-  `/proc`+cgroup-based enrichment. If `container.image.repository` turns
-  out not to populate reliably without a runtime socket (flagged as an
-  open verification point in `falco/claude-code-rules.yaml`'s own
-  comments), the macro there falls back to `user.uid = 1000 and
-  container.id != host` instead — `claude-code` is the only service in
-  this repo that runs as UID 1000.
-- Alert delivery is entirely local: Falco's `program_output` (see
-  `falco/falco.yaml`) pipes each alert to `falco-notify.sh`, which calls
-  `notify-send` against the host's D-Bus **session bus**, bind-mounted
-  read-write into `security-monitor` at `/run/user/${HOST_UID}/bus`
-  (`HOST_UID` exported by `bin/cc-container` as `$(id -u)`). No external
-  service, no network egress needed for this at all — `security-monitor`
-  runs with `network_mode: none`. This only works with an active
-  graphical Linux session (D-Bus session bus running) on the host; it's a
-  deliberate trade-off, not a bug, for a tool meant to run on a dev
-  workstation.
-- `Dockerfile.security-monitor`, `falco/falco.yaml`, and
-  `docker-compose.yml`'s `security-monitor` block (exact `cap_add` set,
-  `program_output` config keys) were written from Falco documentation
-  knowledge, not verified against a live build (no Docker access at
-  authoring time) — see the verification comments at the top of each file
-  before relying on this in practice.
+- **Container attribution matches on `user.name = claudecode`**, not
+  `container.image.repository`/`container.name` (falco/claude-code-rules.yaml's
+  `claude_code_container` macro). History: `container.image.repository`
+  never populates without a `docker.sock` mount, which this repo
+  deliberately doesn't add (see the security-critical note above) — every
+  event showed `container_name=<NA>`. A first fix matched `user.uid =
+  1000` instead (claude-code is the only *service* in this repo running
+  as UID 1000) — confirmed false on a real host: a host user whose own
+  UID also happens to be 1000 (a common default for the first non-root
+  Linux account) running `docker compose build` matched the same macro,
+  misattributing the build's own npm/apt activity as claude-code traffic.
+  `user.name` disambiguates this correctly (Falco resolves the two
+  differently, confirmed on a real host) since it matches the literal
+  account name from `useradd -u 1000 claudecode` in the Dockerfile, not
+  the numeric UID.
+- Alert delivery has two independent gotchas, both fixed and confirmed
+  working on a real host:
+  - **stdout is block-buffered, not unbuffered, once it isn't a TTY**
+    (always true under `docker logs`) — Falco's own status/init logging
+    goes to stderr (always unbuffered by the C standard, hence always
+    appeared live), but alerts go through `stdout_output`, which sat in
+    glibc's stdio buffer for minutes until it filled or the process
+    exited. `docker-compose.yml`'s `security-monitor.command` wraps the
+    entrypoint in `stdbuf -oL -eL` to force line buffering. Falco's own
+    `buffered_outputs: false` config key does *not* fix this — that
+    controls Falco's internal output queue, not the underlying process's
+    stdio buffering.
+  - **`falco-notify.sh` needs `setpriv` to drop from root to `HOST_UID`**
+    before calling `notify-send` — `security-monitor` runs as root (the
+    one deliberate capability exception in this repo), but the host's
+    D-Bus session bus belongs to a specific non-root user. D-Bus's
+    `EXTERNAL` auth mechanism checks the connecting process's actual
+    kernel peer-credential UID, not just whatever
+    `DBUS_SESSION_BUS_ADDRESS` points at — a root `notify-send` opens the
+    socket fine but gets the connection closed immediately after. Needs
+    `HOST_UID` in `security-monitor`'s `environment:` (separate from its
+    existing use in the D-Bus socket *path*) and `util-linux` installed in
+    `Dockerfile.security-monitor` (for `setpriv`).
+  - No external service, no network egress needed for any of this —
+    `security-monitor` runs with `network_mode: none`. Desktop
+    notifications only work with an active graphical Linux session (D-Bus
+    session bus running) on the host; deliberate trade-off, not a bug, for
+    a tool meant to run on a dev workstation.
+- `falco/falco.yaml` schema drifted across three keys between whatever
+  Falco version the doc-only draft assumed and the 0.39.2 actually
+  pulled: `rules_file` → `rules_files` (plural; singular still works with
+  a deprecation warning in 0.39.x, hard-fails in 0.40.0), top-level
+  `outputs: {rate, max_burst}` (removed entirely, no replacement — distinct
+  from the still-valid `syscall_event_drops.rate/max_burst`, which this
+  repo doesn't set), and `metadata_download` (also removed; unrelated to
+  and not needed given `network_mode: none`). All three are fixed in the
+  current file; if bumping the `falcosecurity/falco-no-driver` base image
+  tag later, re-check `schema validation: ok` in the startup log for all
+  three files (`falco.yaml`, `falco_rules.yaml`, `claude-code-rules.yaml`)
+  before trusting anything past that point.
+- **Rule set** (`falco/claude-code-rules.yaml`) covers: unexpected shell
+  spawn, the read-only Squid-override write attempt (see caveat below),
+  outbound connection bypassing `egress-proxy`, a non-Claude read of the
+  OAuth credentials file (relevant only when the optional
+  `~/.claude`-reuse mount is active), privilege escalation attempts
+  (`sudo`/`su`/`pkexec`/`doas`), shell-history tampering, a network tool
+  executed with an npm/yarn/pnpm/bun ancestor (adapted from
+  [falcosecurity/rules](https://github.com/falcosecurity/rules)'
+  `falco-sandbox_rules.yaml`), reads of `/proc/*/environ` (adapted from the
+  same repo's `falco-incubating_rules.yaml`), contact with the cloud
+  metadata service (`169.254.169.254`, same source), and a process
+  impersonating a trusted name (`claude`/`node`/`Bun`) via
+  `prctl(PR_SET_NAME)`.
+  - The Squid-override rule is suspected dead in practice: it fires on
+    `open_write`, but the write attempt fails at the read-only mount
+    itself (`EROFS`) before a file descriptor exists, and `open_write`
+    likely requires a successful open. Confirmed no alert on a real host
+    for a failing `touch` against that path; not yet fixed (would need a
+    condition that doesn't depend on `open_write`'s success requirement).
+  - Several rules exclude `proc.name`/`proc.pname in (claude, node)` (or
+    the real runtime name, see below) as "this is claude-code itself, not
+    an attacker" — this is spoofable, since `proc.name` is just the
+    self-reported `comm` string (settable via `prctl(PR_SET_NAME)` or by
+    naming a binary accordingly). Hardened where possible with
+    `proc.exepath`/`proc.pexepath` instead (the kernel-resolved file
+    actually backing the process, not spoofable by renaming): the real
+    claude-code CLI is a **Bun-compiled single-file ELF executable** at
+    `/home/claudecode/.npm-global/bin/claude` (confirmed on a real host —
+    `file`/hexdump showed an ELF header; no separate `bun` binary exists
+    anywhere on the image), and its actual process/thread name is `Bun`
+    (and `Bun Pool N` for worker threads), not literally `claude` or
+    `node`. An earlier attempt to harden this via
+    `proc.is_exe_upper_layer=false` (same field the bundled "Executing
+    binary not part of base image" rule uses) false-positived: claude-code
+    itself turned out to be upper-layer on a real host (likely npm
+    self-updated at container runtime rather than baked into the image at
+    build time), so that field can't distinguish "legitimate but
+    runtime-updated" from "foreign binary". `proc.exepath` doesn't have
+    that problem. `proc.pexepath` for the "Unexpected shell" rule and the
+    `prctl` impersonation rule (both added 2026-09-11) are **not yet
+    confirmed by triggering them on a live host** — verified against
+    Falco/libs source only (`sinsp_filtercheck_thread.cpp`,
+    `driver/event_table.c`, `driver/flags_table.c`). See the "OPEN ITEMS"
+    block at the top of `falco/claude-code-rules.yaml` for the current,
+    maintained list of what's untested/unresolved per rule — kept there,
+    not duplicated here, since it changes faster than this file does.
+  - Known, deliberately unclosed blind spots (limits of syscall-based
+    detection, not bugs): bash **builtins** (`history -c`, `unset
+    HISTFILE` typed into an already-open shell) never `execve` anything,
+    so Falco can't see them at all. `curl`/`wget` are deliberately absent
+    from the npm-install network-tool list (upstream's own choice, to
+    avoid flagging every normal install) even though they're the most
+    likely real exfiltration tools. Exfiltration over an
+    **already-allowlisted** domain via a normal-looking tool remains
+    invisible to every rule here — that's the exact scenario this whole
+    feature exists for, and it's still not solved. A reverse shell that
+    never `execve`s a new binary (e.g. a script opening a raw socket
+    in-process) won't trigger any `spawned_process`-based rule. The
+    npm-install ancestor check only looks 5 levels up
+    (`proc.aname[2..5]`).
+- `Dockerfile.security-monitor`'s `apt-get install` also needs
+  `util-linux` now (for `setpriv`, see above), in addition to
+  `libnotify-bin`.
+- `bin/cc-container` now has a `sync_security_monitor_sidecar()` function
+  (mirrors the existing `sync_proxy_auth_sidecar()` pattern), called from
+  `update-deps.sh` so `cc-container --update` keeps this sidecar's image
+  in sync with local `Dockerfile.security-monitor`/`falco/*.yaml`/
+  `falco-notify.sh` edits regardless of whether `--monitor` was passed to
+  that particular invocation. Does a plain cached `docker compose build`
+  (no-op when nothing changed, via Docker's own layer-checksum cache —
+  confirmed stable across repeated no-op builds on a real host, same
+  image ID each time) and only `--force-recreate`s a running
+  `security-monitor` if the build actually produced a new image ID —
+  otherwise every `--update` would restart Falco for no reason. `up -d`
+  alone (what `cc-container --monitor` did before this) never rebuilds an
+  already-existing image, cached or not — this was the actual reason
+  `--monitor` kept silently running a stale image across several manual
+  fix attempts.
 
 ## Per-workspace `.squid-claudecode-docker` overrides
 

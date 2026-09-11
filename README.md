@@ -257,6 +257,13 @@ rewrites `ARG NODE_VERSION` in-place before the `--no-cache` rebuild, since
 the tarball install is pinned to an exact version rather than NodeSource's
 rolling per-major repo.
 
+It also keeps the optional `security-monitor` (Falco) sidecar's image in
+sync with any local edits to `Dockerfile.security-monitor`/`falco/*.yaml`/
+`falco-notify.sh`, regardless of whether `--monitor` is passed to that
+particular invocation — a plain cached rebuild (no-op if nothing changed),
+only restarting it if the image actually changed. See "Runtime monitoring
+(optional)" below.
+
 Since builds/pulls go through the host Docker daemon, not through the
 `claude-code` container's network, this doesn't touch `squid.conf` or the
 network isolation. There's no scheduled/automatic run (no cron in the
@@ -418,15 +425,43 @@ cc-container --monitor          # combine with --update if you also want that
 or directly via `docker compose --profile monitoring up -d
 security-monitor`.
 
+Verified end-to-end against a live build (Falco 0.39.2) on 2026-09-11 —
+rule matching, live log output, and desktop notification all confirmed
+working.
+
+`cc-container --update` also keeps this sidecar's image up to date now
+(rebuilds it if `Dockerfile.security-monitor`/`falco/*.yaml`/
+`falco-notify.sh` changed locally), regardless of whether `--monitor` is
+passed to that particular invocation.
+
 **What it watches for** (see `falco/claude-code-rules.yaml`, plus Falco's
 own bundled default ruleset):
 - An unexpected interactive shell spawned inside `claude-code` (typical of
   a compromised `postinstall` hook or an attempted reverse shell).
 - A write attempt against the read-only `.squid-claudecode-docker` mount
-  (an attempt to widen the sandbox's own network policy from inside).
+  (an attempt to widen the sandbox's own network policy from inside) —
+  note: suspected to never actually fire in practice, see "Known blind
+  spots" below.
 - An outbound connection attempt from `claude-code` to anything other than
   `egress-proxy` (shouldn't be able to succeed given the network topology,
-  but the attempt itself is worth knowing about).
+  but the attempt itself is worth knowing about), including specifically
+  the cloud instance metadata service (`169.254.169.254`) used by
+  AWS/GCP/Azure to serve credentials.
+- A non-Claude process reading claude-code's OAuth credentials file —
+  relevant if you've enabled the optional host-credential-reuse mount
+  (see "Setup" above).
+- A privilege escalation attempt (`sudo`/`su`/`pkexec`/`doas`) —
+  `claude-code` always runs as a non-root user and never needs these.
+- Shell history being deleted or cleared (`history -c` and similar) —
+  classic cover-your-tracks behavior.
+- A network tool (`nc`, `socat`, `tcpdump`, ...) launched with an
+  npm/yarn/pnpm/bun install somewhere in its ancestry — the classic
+  npm supply-chain attack pattern (malicious `postinstall` scripts).
+- A process reading another process's environment variables via
+  `/proc/*/environ` (`ANTHROPIC_API_KEY` and other secrets are passed in
+  as container environment variables).
+- A process trying to impersonate `claude-code` itself by renaming itself
+  (`prctl(PR_SET_NAME)`) to blend in with the exclusions above.
 
 **How you're notified:** natively, via your desktop's own notification
 system — `security-monitor` bind-mounts your host's D-Bus session bus and
@@ -450,6 +485,22 @@ headless server.
 - This is a detection layer, not prevention — Falco doesn't block
   anything, it only alerts. The domain allowlist remains the actual
   enforcement mechanism.
+
+**Known blind spots** (limits of syscall-based detection, not bugs to fix):
+- Bash **builtins** (`history -c`, `unset HISTFILE` typed into an
+  already-open shell) never execute a new process, so Falco can't see
+  them at all — only a `history -c` passed to a *new* shell invocation is
+  caught.
+- `curl`/`wget` are deliberately not treated as suspicious during an npm
+  install (too noisy — normal installs use them too), even though they're
+  the most likely real exfiltration tools.
+- Exfiltration over a domain that's already on the allowlist, using a
+  normal-looking tool, remains invisible to every rule here. That's the
+  exact scenario this whole feature exists for (see the intro above) —
+  runtime monitoring narrows this gap, it doesn't close it.
+- A reverse shell that never executes a new binary (e.g. a script opening
+  a raw socket from within an already-running process) won't trigger any
+  of the shell/process-based rules.
 
 ## Testing
 
