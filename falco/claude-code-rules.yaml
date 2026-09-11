@@ -7,16 +7,18 @@
 # (derive_compose_project_name() in bin/cc-container), but the image is
 # always claude-code:latest (see AGENTS.md "Multi-instance invariants").
 #
-# VERIFY (no Docker access at authoring time, see Dockerfile.security-monitor):
-# whether container.image.repository actually populates without a
-# docker.sock mount (deliberately not mounted here -- see AGENTS.md
-# "Runtime monitoring"). If it doesn't resolve on a real host, replace the
-# macro condition below with `user.uid = 1000 and container.id != host`
-# (claude-code always runs as UID 1000 -- see Dockerfile -- no other
-# service in this repo does).
+# Confirmed on a real host: without a docker.sock mount, Falco can't
+# resolve container.image.repository or container.name at all (every event
+# shows container_name=<NA>) -- so the container.image.repository match
+# below never fired and these three rules were dead. Matching on UID
+# instead: claude-code is the only service in this repo that runs as UID
+# 1000 (Dockerfile: `useradd -u 1000 claudecode`) -- egress-proxy's Squid
+# runs as UID 13 (proxy), proxy-auth's entrypoint runs as root. excluding
+# container.id=host keeps this from also matching a host-level UID-1000
+# process outside any container.
 
 - macro: claude_code_container
-  condition: (container.image.repository = "claude-code")
+  condition: (user.uid = 1000 and container.id != host)
 
 - rule: Unexpected shell in claude-code
   desc: >
