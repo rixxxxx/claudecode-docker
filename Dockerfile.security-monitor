@@ -7,19 +7,26 @@
 # claude-code's own privileges) -- see README "Runtime monitoring
 # (optional)" and AGENTS.md.
 #
-# VERIFY BEFORE RELYING ON THIS: base image tag/availability, whether apt
-# is actually the package manager in this image, and falco.yaml's
-# engine/program_output config keys were written from documentation
-# knowledge, not confirmed against a live build (no Docker access at
-# authoring time). After building, run
-# `docker compose --profile monitoring build security-monitor && docker
-# compose run --rm security-monitor falco --version` and diff
-# /etc/falco/falco.yaml's actual default against falco/falco.yaml here.
+# Verified against a live build (Falco 0.39.2, 2026-09-11): base image
+# pulls fine, apt is the package manager, engine.kind/program_output keys
+# are correct (see falco/falco.yaml's own verification note for the two
+# corrections found: rules_files plural, outputs.rate/max_burst removed).
+#
+# util-linux (for setpriv) is needed by falco-notify.sh: this container
+# runs as root (the one deliberate privileged exception in this repo, see
+# AGENTS.md), but the host's D-Bus session bus belongs to a specific
+# non-root host user (HOST_UID) -- D-Bus's EXTERNAL auth checks the
+# connecting process's actual peer credentials (kernel SO_PEERCRED), so a
+# root notify-send gets its connection closed immediately ("The connection
+# is closed") even with DBUS_SESSION_BUS_ADDRESS pointed at the right
+# socket. falco-notify.sh uses setpriv to actually become HOST_UID before
+# calling notify-send, which is the only thing D-Bus will accept.
 
 FROM falcosecurity/falco-no-driver:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnotify-bin \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY falco/falco.yaml /etc/falco/falco.yaml

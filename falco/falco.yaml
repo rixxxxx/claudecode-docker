@@ -9,10 +9,15 @@
 #
 # Verified against a live build (Falco 0.39.2, 2026-09-11): engine.kind,
 # modern_ebpf, program_output and both rules files all pass schema
-# validation. One correction from the original doc-only draft: the key is
-# `rules_files` (plural) -- `rules_file` (singular) is deprecated in 0.39.x
-# (warns, still works) and is a hard schema-validation failure as of 0.40.0
-# (see falcosecurity/falco#3296).
+# validation. Two corrections from the original doc-only draft:
+#   - the key is `rules_files` (plural) -- `rules_file` (singular) is
+#     deprecated in 0.39.x (warns, still works) and is a hard
+#     schema-validation failure as of 0.40.0 (see falcosecurity/falco#3296).
+#   - top-level `outputs: {rate, max_burst}` was removed from Falco's config
+#     entirely in a breaking change before 0.39 (see
+#     falcosecurity/falco#2763) -- there is no replacement key for this at
+#     the top level (distinct from the still-valid
+#     syscall_event_drops.rate/max_burst, which this repo doesn't set).
 
 rules_files:
   - /etc/falco/falco_rules.yaml
@@ -35,10 +40,6 @@ log_level: info
 priority: debug
 
 buffered_outputs: false
-
-outputs:
-  rate: 1
-  max_burst: 1000
 
 syslog_output:
   enabled: false

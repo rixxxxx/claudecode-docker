@@ -142,6 +142,10 @@ services:
     environment:
       HOST_PROC: /host/proc
       DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${HOST_UID:-1000}/bus
+      # falco-notify.sh needs this to setpriv from root down to the host
+      # user who actually owns the D-Bus session bus above -- see
+      # Dockerfile.security-monitor's verification note.
+      HOST_UID: ${HOST_UID:-1000}
     restart: unless-stopped
 
 networks:

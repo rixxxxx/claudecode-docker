@@ -7,13 +7,21 @@
 # must already be set in the environment for this to reach the host's
 # actual notification daemon.
 #
-# VERIFY BEFORE RELYING ON THIS: whether a root process in this container
-# can write to the host's /run/user/<uid>/bus session socket, and whether
-# notify-send needs anything beyond DBUS_SESSION_BUS_ADDRESS (e.g.
-# XDG_RUNTIME_DIR) to work reliably -- not confirmed on a live host at
-# authoring time. See AGENTS.md "Runtime monitoring".
+# Confirmed on a real host (2026-09-11): a plain root notify-send connects
+# to the socket fine but gets "The connection is closed" right after --
+# D-Bus's EXTERNAL auth checks the connecting process's actual kernel
+# peer-credential UID against the bus owner (HOST_UID), and this container
+# runs as root, not HOST_UID. setpriv actually changes the process's real
+# UID before notify-send opens the connection, which is the only thing
+# D-Bus's credential check accepts (setting DBUS_SESSION_BUS_ADDRESS alone
+# doesn't fake this).
 set -euo pipefail
 
 message="$(cat)"
 
-notify-send --urgency=critical "Falco: claude-code alert" "$message"
+if [ "$(id -u)" = 0 ] && [ -n "${HOST_UID:-}" ]; then
+    setpriv --reuid="$HOST_UID" --regid="$HOST_UID" --clear-groups \
+        notify-send --urgency=critical "Falco: claude-code alert" "$message"
+else
+    notify-send --urgency=critical "Falco: claude-code alert" "$message"
+fi
