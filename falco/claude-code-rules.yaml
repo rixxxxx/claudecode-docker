@@ -5,29 +5,42 @@
 # ============================================================
 # OPEN ITEMS (as of 2026-09-11) -- update this block, don't let it rot
 # ============================================================
-# Not yet triggered/confirmed on a live host:
-#   - "Unexpected shell in claude-code"'s proc.pexepath hardening (only
-#     verified against Falco/libs source, not by actually spawning a
-#     shell from a spoofed-name parent).
-#   - "Process impersonating trusted name via prctl" -- the whole rule is
-#     new and unverified; in particular unconfirmed whether Falco's
-#     modern_ebpf driver even decodes evt.arg.option/evt.arg.arg2_str the
-#     way the source tables suggest (0.39.2, this host).
+# Resolved 2026-09-11 (real-host false positive, not just theory): the
+# proc.exepath anchor used below was wrong -- hardcoded as
+# /home/claudecode/.npm-global/bin/claude, which is only the npm-created
+# symlink/shim. Falco's proc.exepath resolves the canonical target, which
+# is actually
+# /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+# -- we'd never run `readlink -f` on the shim itself, only on /proc/1/exe
+# (which was bash, PID 1, not claude-code). Confirmed via the live alert
+# output itself once it started false-positiving on every legitimate "Bun
+# Pool N" thread spawn and every normal credentials-file self-read. Fixed
+# in all three rules below; this also incidentally confirms the "Process
+# impersonating trusted name via prctl" and "Non-Claude read of
+# ~/.claude credentials" rules DO mechanically fire correctly on a live
+# host (0.39.2) -- they just had the wrong exclusion value, not a broken
+# condition. Re-verified 2026-09-11 after the fix: a full cc-container
+# session (credentials entry through to the claude prompt) produced zero
+# false positives from either rule -- only the pre-existing, already
+# documented "Outbound connection ... bypassing egress-proxy" noise from
+# claude's own internal traffic. Both rules considered confirmed working
+# now, not just mechanically firing.
+#
+# Not yet triggered/confirmed on a live host at all:
+#   - "Unexpected shell in claude-code"'s proc.pexepath hardening
+#     specifically (the credentials/prctl rules are now confirmed live per
+#     above; this one hasn't produced any log line yet either way).
 #   - "Network tool executed during npm install", "Environment variables
 #     read from proc", "Contact cloud metadata service from claude-code",
 #     "Privilege escalation attempt", "Shell history tampering" -- all
 #     added/adapted this session, none actually triggered end-to-end yet
 #     (test commands were proposed in conversation but not confirmed
 #     back).
-#   - "Non-Claude read of ~/.claude credentials" in its current, narrowed
-#     form (just .credentials.json + proc.exepath) -- the *broader* form
-#     was confirmed to false-positive twice; this rewrite hasn't been
-#     re-tested at all yet.
 #
 # Open, unresolved question:
 #   - Does a *real* claude-code Bash-tool call (issued by the assistant
 #     itself, not `docker compose exec` from the host) have proc.pexepath
-#     = /home/claudecode/.npm-global/bin/claude directly, or does
+#     = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe directly, or does
 #     something sit in between (e.g. rtk's PreToolUse hook, see
 #     RTK.md/README "RTK") that would make the exepath-hardened
 #     "Unexpected shell" rule false-positive on every single legitimate
@@ -57,7 +70,7 @@
 #   - npm_package_install_ancestor only checks 5 ancestor levels
 #     (proc.aname[2..5]).
 #
-# Maintenance trap: /home/claudecode/.npm-global/bin/claude (used as the
+# Maintenance trap: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe (used as the
 # proc.exepath anchor in three rules) is this host's actual observed
 # install path, not something pinned/guaranteed by the Dockerfile. If the
 # npm global prefix or install method ever changes, these three rules
@@ -96,7 +109,7 @@
 # Confirmed on a real host (2026-09-11): the claude-code CLI's actual
 # process/thread name is "Bun" (and "Bun Pool N" for its worker threads) --
 # it's a Bun-runtime binary, not literally named "claude" or "node". Its
-# real, concrete executable is /home/claudecode/.npm-global/bin/claude (an
+# real, concrete executable is /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe (an
 # ELF binary, confirmed via `file`/hexdump on a real host -- claude-code
 # ships as a Bun-compiled single-file executable, not a script; no
 # separate "bun" binary exists anywhere on the image). "node" is kept in
@@ -121,7 +134,7 @@
     spawned_process
     and claude_code_container
     and proc.name in (bash, sh, dash, zsh, ash)
-    and not (proc.pname in (claude, node) or proc.pexepath = /home/claudecode/.npm-global/bin/claude)
+    and not (proc.pname in (claude, node) or proc.pexepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
   output: >
     Shell spawned in claude-code
     (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -195,7 +208,7 @@
 # (proc.name is self-reported, any process can rename itself to "Bun"),
 # hardened with proc.exepath instead: the real claude-code CLI is a
 # Bun-compiled single-file ELF executable at
-# /home/claudecode/.npm-global/bin/claude (confirmed on a real host --
+# /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe (confirmed on a real host --
 # `file`/hexdump showed an ELF header, and no separate "bun" binary exists
 # anywhere on the image, so this path is what actually backs every
 # process that shows up as "Bun"). Unlike proc.name/is_exe_upper_layer,
@@ -213,7 +226,7 @@
     open_read
     and claude_code_container
     and fd.name = /home/claudecode/.claude/.credentials.json
-    and not (proc.name in (claude, node) or proc.exepath = /home/claudecode/.npm-global/bin/claude)
+    and not (proc.name in (claude, node) or proc.exepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
   output: >
     Non-Claude process read ~/.claude credentials in claude-code
     (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
@@ -379,7 +392,7 @@
 # runtime -- that field can't distinguish "legitimate but runtime-updated"
 # from "foreign binary"). Fixed properly instead with proc.exepath: the
 # real claude-code CLI is a Bun-compiled single-file ELF executable at
-# /home/claudecode/.npm-global/bin/claude (confirmed on a real host, no
+# /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe (confirmed on a real host, no
 # separate "bun" binary exists on the image) -- every legitimate "Bun"/"Bun
 # Pool N" thread runs from that exact file regardless of when it was
 # installed, but an attacker's process can't make the kernel report that
@@ -398,7 +411,7 @@
     and claude_code_container
     and evt.arg.option = PR_SET_NAME
     and (evt.arg.arg2_str in (claude, node) or evt.arg.arg2_str = "Bun" or evt.arg.arg2_str startswith "Bun ")
-    and proc.exepath != /home/claudecode/.npm-global/bin/claude
+    and proc.exepath != /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
   output: >
     Process impersonating trusted name via prctl in claude-code
     (new_name=%evt.arg.arg2_str exe=%proc.exepath command=%proc.cmdline user=%user.name container=%container.id)
