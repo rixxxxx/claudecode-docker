@@ -85,6 +85,81 @@
   priority: WARNING
   tags: [claude-code, network]
 
+# Scoped to /home/claudecode/.claude/ rather than credentials.json by name:
+# this repo doesn't hardcode Claude Code's exact credential filename (no
+# live verification of it), so the rule instead excludes the two files
+# that are legitimately read by non-claude/node processes as part of
+# normal operation -- statusline.py is invoked as `python3 ...` on every
+# status-line refresh (see Dockerfile), settings.json is plain config, not
+# a secret. Only relevant when docker-compose.yml's commented-out
+# `${HOME}/.claude:/home/claudecode/.claude` host-credential-reuse mount
+# is actually enabled -- otherwise this directory holds nothing sensitive
+# and the rule stays dormant.
+- rule: Non-Claude read of ~/.claude in claude-code
+  desc: >
+    A process other than claude/node read a file under
+    /home/claudecode/.claude/ inside claude-code. When the optional host
+    OAuth-credential-reuse mount is active, this directory holds a live
+    Claude Pro/Max login session -- a high-value target for a compromised
+    dependency to read and exfiltrate.
+  condition: >
+    open_read
+    and claude_code_container
+    and fd.name startswith /home/claudecode/.claude/
+    and not fd.name in (/home/claudecode/.claude/statusline.py, /home/claudecode/.claude/settings.json)
+    and not proc.name in (claude, node)
+  output: >
+    Non-Claude process read ~/.claude file in claude-code
+    (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, credentials]
+
+- rule: Privilege escalation attempt in claude-code
+  desc: >
+    A process inside claude-code tried to run sudo/su/pkexec/doas.
+    claude-code always runs as UID 1000 (Dockerfile: `useradd -u 1000
+    claudecode`) and never legitimately needs root -- any attempt is
+    either a misconfigured tool or a compromised dependency trying to
+    escalate. None of these binaries are installed in the base image, so
+    this also catches a dependency bringing/installing its own copy.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name in (sudo, su, pkexec, doas)
+  output: >
+    Privilege escalation attempt in claude-code
+    (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, privilege-escalation]
+
+# Overlaps with Falco's own bundled "Delete or rename shell history" rule
+# (also loaded, see falco/falco.yaml's rules_files) -- kept as a
+# container-scoped duplicate anyway, for output consistent with this
+# file's other rules (container/user fields, claude-code tags) and to make
+# the coverage explicit rather than relying on the bundled ruleset's
+# generic version. Deliberately excludes plain open_write to
+# .bash_history: bash appends to it on every command/shell exit by
+# default, which would make that condition fire constantly on completely
+# normal use -- only actual deletion/rename or explicit
+# clear/disable commands count as tampering here.
+- rule: Shell history tampering in claude-code
+  desc: >
+    Something deleted/renamed claude-code's shell history file, or ran a
+    command to clear/disable history tracking -- classic
+    cover-your-tracks behavior after a compromise, not something
+    claude-code's own normal operation does.
+  condition: >
+    claude_code_container
+    and (
+      (evt.type in (unlink, unlinkat, rename, renameat, renameat2) and fd.name contains "bash_history")
+      or (spawned_process and (proc.cmdline contains "history -c" or proc.cmdline contains "HISTFILE"))
+    )
+  output: >
+    Shell history tampering in claude-code
+    (command=%proc.cmdline file=%fd.name user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, defense-evasion]
+
 # TEST-ONLY: not a security signal. Confirms the security-monitor pipeline
 # end to end (rule match -> stdout log -> program_output -> falco-notify.sh
 # -> desktop notification) with a single harmless, unambiguous trigger, so
