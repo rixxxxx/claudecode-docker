@@ -4,16 +4,17 @@
 #   - engine.kind: modern_ebpf -- no kernel module build, no --privileged.
 #   - program_output: enabled, pipes each alert to falco-notify.sh (native
 #     desktop notification via the host's D-Bus session bus).
-#   - rules_file: adds claude-code-rules.yaml alongside the bundled default
+#   - rules_files: adds claude-code-rules.yaml alongside the bundled default
 #     ruleset.
 #
-# VERIFY (no Docker access at authoring time): exact key names/structure
-# against the Falco version actually pulled at build time -- written from
-# documentation knowledge. Re-check when bumping the base image tag in
-# Dockerfile.security-monitor, similar to how bin/update-deps.sh tracks
-# other pinned versions in this repo.
+# Verified against a live build (Falco 0.39.2, 2026-09-11): engine.kind,
+# modern_ebpf, program_output and both rules files all pass schema
+# validation. One correction from the original doc-only draft: the key is
+# `rules_files` (plural) -- `rules_file` (singular) is deprecated in 0.39.x
+# (warns, still works) and is a hard schema-validation failure as of 0.40.0
+# (see falcosecurity/falco#3296).
 
-rules_file:
+rules_files:
   - /etc/falco/falco_rules.yaml
   - /etc/falco/rules.d
 

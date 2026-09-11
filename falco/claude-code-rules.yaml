@@ -74,3 +74,32 @@
     (dest=%fd.rip:%fd.rport command=%proc.cmdline user=%user.name container=%container.id)
   priority: WARNING
   tags: [claude-code, network]
+
+# TEST-ONLY: not a security signal. Confirms the security-monitor pipeline
+# end to end (rule match -> stdout log -> program_output -> falco-notify.sh
+# -> desktop notification) with a single harmless, unambiguous trigger, so
+# a "why didn't rule X fire" investigation can first rule out "the pipeline
+# itself is broken" before debugging a specific rule's condition. Safe to
+# delete this block any time -- it lives only here, no Dockerfile/Compose
+# change depends on it.
+#
+# Trigger (inside the claude-code container):
+#   touch /tmp/falco-pipeline-test
+# Expect: a "TEST ALERT" line in `docker compose logs -f security-monitor`
+# and a desktop notification. Clean up afterwards with:
+#   rm /tmp/falco-pipeline-test
+- rule: TEST - Falco pipeline sanity check
+  desc: >
+    Test-only rule with no security meaning. Confirms Falco's rule
+    matching, stdout log output, and program_output/notify-send path are
+    all working, via one specific harmless command.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name = touch
+    and proc.args contains "falco-pipeline-test"
+  output: >
+    TEST ALERT - Falco pipeline is working
+    (command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, test]
