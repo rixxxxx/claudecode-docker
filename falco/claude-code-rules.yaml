@@ -10,15 +10,25 @@
 # Confirmed on a real host: without a docker.sock mount, Falco can't
 # resolve container.image.repository or container.name at all (every event
 # shows container_name=<NA>) -- so the container.image.repository match
-# below never fired and these three rules were dead. Matching on UID
-# instead: claude-code is the only service in this repo that runs as UID
-# 1000 (Dockerfile: `useradd -u 1000 claudecode`) -- egress-proxy's Squid
-# runs as UID 13 (proxy), proxy-auth's entrypoint runs as root. excluding
-# container.id=host keeps this from also matching a host-level UID-1000
-# process outside any container.
+# below never fired and these three rules were dead.
+#
+# Matching on user.name instead of user.uid: an earlier version of this
+# macro matched user.uid = 1000, reasoning that claude-code is the only
+# service in this repo running as UID 1000. Confirmed false on a real host:
+# a `docker compose build` invoked by a host user whose own UID also
+# happens to be 1000 (a very common default for the first non-root Linux
+# user) runs its RUN steps in their own namespace (container.id != host
+# too), so it matched this macro and got misattributed as claude-code
+# activity (the log showed these events as user=<host username>, not
+# user=claudecode). Falco already resolves user.name correctly and
+# differently for the two (confirmed on the same log) -- matching on the
+# literal account name the Dockerfile creates (`useradd -u 1000
+# claudecode`) instead of the numeric UID disambiguates this without
+# needing a docker.sock mount (see AGENTS.md/README for why that's
+# deliberately not an option).
 
 - macro: claude_code_container
-  condition: (user.uid = 1000 and container.id != host)
+  condition: (user.name = claudecode and container.id != host)
 
 - rule: Unexpected shell in claude-code
   desc: >
