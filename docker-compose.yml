@@ -121,6 +121,15 @@ services:
     image: claude-code-security-monitor:latest
     profiles:
       - monitoring
+    # Confirmed on a real host (2026-09-11): alerts (stdout_output) were
+    # firing correctly the whole time, but glibc block-buffers stdout when
+    # it isn't a TTY (which it never is under `docker logs`) -- so every
+    # alert sat in Falco's stdio buffer until the buffer filled or the
+    # process exited, making `docker logs -f` look dead for
+    # minutes even though Falco's own status lines (which go to stderr,
+    # always unbuffered) appeared instantly. stdbuf forces line-buffered
+    # stdout/stderr so `docker logs -f` actually streams alerts live.
+    command: ["stdbuf", "-oL", "-eL", "/usr/bin/falco", "-o", "time_format_iso_8601=true"]
     cap_add:
       - SYS_ADMIN
       - SYS_RESOURCE

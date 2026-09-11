@@ -113,24 +113,3 @@
     (command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, test]
-
-# TEST-ONLY diagnostic: deliberately has NO claude_code_container gate, so
-# it fires on the same trigger regardless of whether that macro matches.
-# Dumps the raw field values the macro depends on -- use this to see
-# exactly what user.name/user.uid/container.id actually resolve to for the
-# touch process, when the gated rule above doesn't fire. Delete alongside
-# the sanity-check rule once the macro is confirmed working again.
-- rule: TEST - Falco pipeline diagnostic raw fields
-  desc: >
-    Test-only rule with no security meaning and no claude_code_container
-    gate. Logs raw user/container field values for debugging.
-  condition: >
-    spawned_process
-    and proc.name = touch
-    and proc.args contains "falco-pipeline-test"
-  output: >
-    TEST DIAG (user.name=%user.name user.uid=%user.uid
-    container.id=%container.id container.name=%container.name
-    parent=%proc.pname)
-  priority: CRITICAL
-  tags: [claude-code, test]
