@@ -76,7 +76,7 @@ RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
     gh
 
 # Pinned by bin/update-deps.sh when a newer patch is available.
-ARG NODE_VERSION=24.20.0
+ARG NODE_VERSION=24.21.0
 
 # Install Node.js from the official upstream tarball instead of NodeSource +
 # apt: NodeSource's per-release repos can lag behind brand-new Ubuntu
@@ -128,7 +128,7 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # here rather than at the top of the file so bumping it only invalidates this
 # layer and everything below -- not the apt/Node layers above -- mirroring the
 # NODE_VERSION pattern above.
-ARG CLAUDE_CODE_VERSION=2.1.261
+ARG CLAUDE_CODE_VERSION=2.1.268
 
 # Install ClaudeCode via npm (more reliable than curl install script).
 # The secret mounts work the same way post-USER-switch: BuildKit injects the
