@@ -160,6 +160,92 @@
   priority: WARNING
   tags: [claude-code, defense-evasion]
 
+# Three rules below adapted from falcosecurity/rules
+# (https://github.com/falcosecurity/rules) -- community rule tiers not
+# bundled in Falco by default (only falco_rules.yaml, the stable set, is).
+# Hand-picked and rewritten against claude_code_container instead of each
+# original's generic `container`/`outbound` macros, since those rely on
+# container.image.repository/name resolution -- confirmed earlier in this
+# file to not populate without a docker.sock mount, which this repo
+# deliberately doesn't add. Verified the source conditions/lists by
+# fetching the raw YAML (falco-incubating_rules.yaml,
+# falco-sandbox_rules.yaml) on 2026-09-11, not by running them.
+
+# Source: "Network Tool Executed During NPM Package Install"
+# (falco-sandbox_rules.yaml). Complements the generic "Unexpected shell"
+# rule above with a specific supply-chain angle: malicious npm/yarn/pnpm/
+# bun packages commonly invoke a network tool from a pre/postinstall
+# script to exfiltrate data or fetch a second-stage payload.
+- list: node_package_managers
+  items: [npm, yarn, pnpm, bun]
+
+- macro: npm_package_install_ancestor
+  condition: >
+    (proc.pname in (node_package_managers) or
+     proc.aname[2] in (node_package_managers) or
+     proc.aname[3] in (node_package_managers) or
+     proc.aname[4] in (node_package_managers) or
+     proc.aname[5] in (node_package_managers))
+
+- list: network_tool_binaries
+  items: [nc, ncat, netcat, nmap, dig, tcpdump, tshark, ngrep, telnet, mitmproxy, socat, zmap]
+
+- rule: Network tool executed during npm install in claude-code
+  desc: >
+    A network tool was launched with an npm/yarn/pnpm/bun package-manager
+    process somewhere in its ancestry inside claude-code.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name in (network_tool_binaries)
+    and npm_package_install_ancestor
+  output: >
+    Network tool executed during npm install in claude-code
+    (command=%proc.cmdline parent=%proc.pname gparent=%proc.aname[2] user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, network, supply-chain]
+
+# Source: "Read environment variable from /proc files"
+# (falco-incubating_rules.yaml). Relevant here because ANTHROPIC_API_KEY
+# and other secrets are passed into claude-code as container environment
+# variables (see docker-compose.yml) -- reading a sibling/parent process's
+# /proc/<pid>/environ is a plausible way to steal them without going
+# through a file at all.
+- rule: Environment variables read from proc in claude-code
+  desc: >
+    A process read another process's environment variables via
+    /proc/<pid>/environ inside claude-code.
+  condition: >
+    open_read
+    and claude_code_container
+    and fd.name glob /proc/*/environ
+  output: >
+    Environment variables read from /proc in claude-code
+    (file=%fd.name command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, credentials]
+
+# Source: "Contact cloud metadata service from container"
+# (falco-incubating_rules.yaml). 169.254.169.254 serves short-lived
+# instance credentials on AWS/GCP/Azure -- a compromised dependency
+# reaching it is a classic credential-theft technique (MITRE T1552.005).
+# Overlaps with the "not via egress-proxy" rule above (169.254.169.254 on
+# port 80 isn't 3128 either, so that rule already fires too) -- kept as
+# its own rule anyway for a triage-friendly, specifically-labeled alert
+# instead of a generic "bypassing egress-proxy" one.
+- rule: Contact cloud metadata service from claude-code
+  desc: >
+    claude-code attempted to contact the cloud instance metadata service.
+  condition: >
+    (evt.type in (connect, sendto, sendmsg) and evt.dir = <)
+    and claude_code_container
+    and fd.sip = "169.254.169.254"
+  output: >
+    Outbound connection from claude-code to cloud metadata service
+    (connection=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, network, credentials]
+
 # TEST-ONLY: not a security signal. Confirms the security-monitor pipeline
 # end to end (rule match -> stdout log -> program_output -> falco-notify.sh
 # -> desktop notification) with a single harmless, unambiguous trigger, so
