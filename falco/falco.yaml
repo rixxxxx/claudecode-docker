@@ -18,6 +18,17 @@
 #     falcosecurity/falco#2763) -- there is no replacement key for this at
 #     the top level (distinct from the still-valid
 #     syscall_event_drops.rate/max_burst, which this repo doesn't set).
+#   - `metadata_download` (k8s/container metadata enrichment download
+#     tuning) is also schema-invalid on 0.39.2 -- removed entirely rather
+#     than chasing its replacement key, since this container has no use for
+#     it anyway: security-monitor runs with network_mode: none (see
+#     docker-compose.yml), so any feature that tries an actual network
+#     fetch has no network stack to use. Suspected (not fully confirmed) of
+#     causing Falco to hang during startup rather than fail fast -- on a
+#     real host, the process got past "Opening 'syscall' source"/"One ring
+#     buffer" (confirmed via bpftool: ringbuf maps did get created,
+#     matching cpus_for_each_buffer) but then never processed a single
+#     event afterwards, with no error printed either.
 
 rules_files:
   - /etc/falco/falco_rules.yaml
@@ -66,8 +77,3 @@ grpc:
 
 grpc_output:
   enabled: false
-
-metadata_download:
-  max_mb: 100
-  chunk_wait_us: 1000
-  watch_freq_sec: 1
