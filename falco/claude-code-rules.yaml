@@ -2,6 +2,69 @@
 # in addition to Falco's bundled default ruleset (see falco/falco.yaml's
 # rules_file). See README "Runtime monitoring (optional)" and AGENTS.md.
 #
+# ============================================================
+# OPEN ITEMS (as of 2026-09-11) -- update this block, don't let it rot
+# ============================================================
+# Not yet triggered/confirmed on a live host:
+#   - "Unexpected shell in claude-code"'s proc.pexepath hardening (only
+#     verified against Falco/libs source, not by actually spawning a
+#     shell from a spoofed-name parent).
+#   - "Process impersonating trusted name via prctl" -- the whole rule is
+#     new and unverified; in particular unconfirmed whether Falco's
+#     modern_ebpf driver even decodes evt.arg.option/evt.arg.arg2_str the
+#     way the source tables suggest (0.39.2, this host).
+#   - "Network tool executed during npm install", "Environment variables
+#     read from proc", "Contact cloud metadata service from claude-code",
+#     "Privilege escalation attempt", "Shell history tampering" -- all
+#     added/adapted this session, none actually triggered end-to-end yet
+#     (test commands were proposed in conversation but not confirmed
+#     back).
+#   - "Non-Claude read of ~/.claude credentials" in its current, narrowed
+#     form (just .credentials.json + proc.exepath) -- the *broader* form
+#     was confirmed to false-positive twice; this rewrite hasn't been
+#     re-tested at all yet.
+#
+# Open, unresolved question:
+#   - Does a *real* claude-code Bash-tool call (issued by the assistant
+#     itself, not `docker compose exec` from the host) have proc.pexepath
+#     = /home/claudecode/.npm-global/bin/claude directly, or does
+#     something sit in between (e.g. rtk's PreToolUse hook, see
+#     RTK.md/README "RTK") that would make the exepath-hardened
+#     "Unexpected shell" rule false-positive on every single legitimate
+#     Bash tool call? Never actually tested -- every shell-spawn test so
+#     far went through `docker compose exec` from the host, which has a
+#     different parent chain (containerd-shim) than an assistant-issued
+#     command would.
+#
+# Suspected dead, not yet fixed:
+#   - "Write attempt to workspace Squid override in claude-code" -- fires
+#     on open_write, but the write fails at the read-only mount (EROFS)
+#     before a fd exists; open_write likely requires a successful open.
+#     Confirmed no alert on a real host for a failing touch against that
+#     path. Needs a condition that doesn't depend on open_write's success
+#     requirement (exact fix not designed yet).
+#
+# Known, deliberately NOT closed (see AGENTS.md "Runtime monitoring" for
+# the fuller writeup of why these are accepted limits, not bugs):
+#   - Bash builtins (history -c, unset HISTFILE typed into an already-open
+#     shell) never execve, invisible to every rule here.
+#   - curl/wget excluded from the npm-install network-tool check on
+#     purpose (upstream's own choice, avoids flagging normal installs).
+#   - Exfiltration over an already-allowlisted domain via an
+#     unremarkable-looking tool is invisible to every rule in this file.
+#   - A reverse shell that never execve's a new binary (raw socket from
+#     within an existing process) won't trigger any spawned_process rule.
+#   - npm_package_install_ancestor only checks 5 ancestor levels
+#     (proc.aname[2..5]).
+#
+# Maintenance trap: /home/claudecode/.npm-global/bin/claude (used as the
+# proc.exepath anchor in three rules) is this host's actual observed
+# install path, not something pinned/guaranteed by the Dockerfile. If the
+# npm global prefix or install method ever changes, these three rules
+# silently stop excluding legitimate claude-code activity (fail toward
+# false positives, not toward blindness -- the safer failure mode, but
+# still worth fixing if it happens).
+#
 # Matches on container.image.repository, not container.name: this repo's
 # claude-code container names are dynamic per workspace
 # (derive_compose_project_name() in bin/cc-container), but the image is
@@ -30,6 +93,24 @@
 - macro: claude_code_container
   condition: (user.name = claudecode and container.id != host)
 
+# Confirmed on a real host (2026-09-11): the claude-code CLI's actual
+# process/thread name is "Bun" (and "Bun Pool N" for its worker threads) --
+# it's a Bun-runtime binary, not literally named "claude" or "node". Its
+# real, concrete executable is /home/claudecode/.npm-global/bin/claude (an
+# ELF binary, confirmed via `file`/hexdump on a real host -- claude-code
+# ships as a Bun-compiled single-file executable, not a script; no
+# separate "bun" binary exists anywhere on the image). "node" is kept in
+# the name exclusion anyway (harmless, costs nothing -- some code paths or
+# a future Claude Code build might still show up as "node").
+#
+# proc.pname alone is spoofable (any process can rename itself via
+# prctl(PR_SET_NAME, ...), see "Unexpected shell" comment history). Hardened
+# with proc.pexepath (Parent Process Executable Path, confirmed real field
+# in falcosecurity/libs' sinsp_filtercheck_thread.cpp) instead of trying to
+# check the parent's exe-layer (no such field exists) -- this can't be
+# spoofed by renaming: an attacker can make their process's comm say
+# "Bun", but not make the kernel report a different file as their actual
+# executable. Not yet confirmed by triggering this rule on a live host.
 - rule: Unexpected shell in claude-code
   desc: >
     An interactive shell was spawned inside the claude-code container.
@@ -40,7 +121,7 @@
     spawned_process
     and claude_code_container
     and proc.name in (bash, sh, dash, zsh, ash)
-    and not proc.pname in (claude, node)
+    and not (proc.pname in (claude, node) or proc.pexepath = /home/claudecode/.npm-global/bin/claude)
   output: >
     Shell spawned in claude-code
     (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -85,31 +166,56 @@
   priority: WARNING
   tags: [claude-code, network]
 
-# Scoped to /home/claudecode/.claude/ rather than credentials.json by name:
-# this repo doesn't hardcode Claude Code's exact credential filename (no
-# live verification of it), so the rule instead excludes the two files
-# that are legitimately read by non-claude/node processes as part of
-# normal operation -- statusline.py is invoked as `python3 ...` on every
-# status-line refresh (see Dockerfile), settings.json is plain config, not
-# a secret. Only relevant when docker-compose.yml's commented-out
-# `${HOME}/.claude:/home/claudecode/.claude` host-credential-reuse mount
-# is actually enabled -- otherwise this directory holds nothing sensitive
-# and the rule stays dormant.
-- rule: Non-Claude read of ~/.claude in claude-code
+# Originally scoped to all of /home/claudecode/.claude/ minus a growing
+# exclusion list (statusline.py, settings.json) -- abandoned after two
+# real false-positive rounds on a live host (2026-09-11):
+#   - Claude Code reads plenty of its own operational files under here as
+#     part of completely normal use: CLAUDE.md/RTK.md (memory), sessions/
+#     *.json and projects/*.jsonl (session transcripts), plugins/backups
+#     dirs, mcp-needs-auth-cache.json -- none of these are secrets, and
+#     hardcoding an exception for each one as they turn up doesn't scale.
+#   - Claude Code's own Bash-tool mechanism sources
+#     shell-snapshots/snapshot-*.sh via a `bash -c` wrapper before running
+#     a command (to restore shell state) -- the reading process there is
+#     literally "bash", which isn't in any claude/node/Bun exclusion list
+#     at all, and never will be without also un-excluding real reverse
+#     shells.
+#   - proc.is_exe_upper_layer=false (tried as a spoofing-resistant
+#     addition to the name check) also false-positived: on this host,
+#     claude-code's own CLI turned out to be upper-layer (likely npm
+#     self-updated at container runtime rather than baked into the image
+#     at build time), so legitimate Bun activity has
+#     is_exe_upper_layer=true too -- this field doesn't reliably
+#     distinguish "legitimate but runtime-updated" from "foreign
+#     binary".
+# Narrowed instead to the one file that's actually a secret -- the OAuth
+# credentials file itself (confirmed real filename from the first
+# false-positive round: /home/claudecode/.claude/.credentials.json). This
+# sidesteps the whack-a-mole problem above. For the remaining spoofing gap
+# (proc.name is self-reported, any process can rename itself to "Bun"),
+# hardened with proc.exepath instead: the real claude-code CLI is a
+# Bun-compiled single-file ELF executable at
+# /home/claudecode/.npm-global/bin/claude (confirmed on a real host --
+# `file`/hexdump showed an ELF header, and no separate "bun" binary exists
+# anywhere on the image, so this path is what actually backs every
+# process that shows up as "Bun"). Unlike proc.name/is_exe_upper_layer,
+# this can't be spoofed by renaming or by a runtime npm update -- it's the
+# actual file the kernel resolved when the process was exec'd.
+- rule: Non-Claude read of ~/.claude credentials in claude-code
   desc: >
-    A process other than claude/node read a file under
-    /home/claudecode/.claude/ inside claude-code. When the optional host
-    OAuth-credential-reuse mount is active, this directory holds a live
-    Claude Pro/Max login session -- a high-value target for a compromised
-    dependency to read and exfiltrate.
+    A process other than claude/node/claude-code's own CLI read the OAuth
+    credentials file inside claude-code. Only relevant when the optional
+    host OAuth-credential-reuse mount (docker-compose.yml's commented-out
+    `${HOME}/.claude:/home/claudecode/.claude` line) is active -- that's
+    when this file holds a live Claude Pro/Max login session, a
+    high-value target for a compromised dependency to exfiltrate.
   condition: >
     open_read
     and claude_code_container
-    and fd.name startswith /home/claudecode/.claude/
-    and not fd.name in (/home/claudecode/.claude/statusline.py, /home/claudecode/.claude/settings.json)
-    and not proc.name in (claude, node)
+    and fd.name = /home/claudecode/.claude/.credentials.json
+    and not (proc.name in (claude, node) or proc.exepath = /home/claudecode/.npm-global/bin/claude)
   output: >
-    Non-Claude process read ~/.claude file in claude-code
+    Non-Claude process read ~/.claude credentials in claude-code
     (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, credentials]
@@ -211,6 +317,17 @@
 # variables (see docker-compose.yml) -- reading a sibling/parent process's
 # /proc/<pid>/environ is a plausible way to steal them without going
 # through a file at all.
+#
+# Confirmed on a real host (2026-09-11): plain `ps aux` reads
+# /proc/<pid>/environ for every process it lists -- a completely routine,
+# harmless command, but without the exclusion below it fired one alert per
+# listed PID on every single `ps aux` call. Excluding known process-listing
+# tools by name, same pattern as the upstream rule's own
+# known_binaries_to_read_environment_variables_from_proc_files list (there
+# populated with scsi_id/argoexec, irrelevant here).
+- list: proc_inspection_binaries
+  items: [ps, top, htop, pgrep, pidof]
+
 - rule: Environment variables read from proc in claude-code
   desc: >
     A process read another process's environment variables via
@@ -219,6 +336,7 @@
     open_read
     and claude_code_container
     and fd.name glob /proc/*/environ
+    and not proc.name in (proc_inspection_binaries)
   output: >
     Environment variables read from /proc in claude-code
     (file=%fd.name command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -245,6 +363,47 @@
     (connection=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, network, credentials]
+
+# Fields verified against falcosecurity/libs source on 2026-09-11
+# (driver/event_table.c: PPME_SYSCALL_PRCTL_X has args res/option/
+# arg2_str/arg2_int; driver/flags_table.c: prctl_options maps "PR_SET_NAME"
+# -> PPM_PR_SET_NAME; sinsp_filtercheck_thread.cpp: proc.exepath resolves
+# the actual executable backing the process) -- not yet confirmed by
+# actually triggering this rule on a live host.
+#
+# Originally excluded "Bun" from this rule's targets entirely: claude-code's
+# own worker threads rename themselves to "Bun Pool N" constantly and
+# legitimately, and an early attempt to tell real Bun apart from an
+# impersonator via proc.is_exe_upper_layer=true false-positived (claude-code
+# was upper-layer on this host too, likely npm self-updated at container
+# runtime -- that field can't distinguish "legitimate but runtime-updated"
+# from "foreign binary"). Fixed properly instead with proc.exepath: the
+# real claude-code CLI is a Bun-compiled single-file ELF executable at
+# /home/claudecode/.npm-global/bin/claude (confirmed on a real host, no
+# separate "bun" binary exists on the image) -- every legitimate "Bun"/"Bun
+# Pool N" thread runs from that exact file regardless of when it was
+# installed, but an attacker's process can't make the kernel report that
+# file as its own executable just by renaming itself. So "Bun" is back in
+# the target list below, gated on the executable NOT being the real one.
+- rule: Process impersonating trusted name via prctl in claude-code
+  desc: >
+    A process inside claude-code, running from a binary other than
+    claude-code's own real executable, renamed itself via
+    prctl(PR_SET_NAME) to "Bun", "claude", or "node" -- names this file's
+    other rules treat as trusted. Consistent with an attacker deliberately
+    trying to evade those proc.name-based exclusions.
+  condition: >
+    evt.type = prctl
+    and evt.dir = <
+    and claude_code_container
+    and evt.arg.option = PR_SET_NAME
+    and (evt.arg.arg2_str in (claude, node) or evt.arg.arg2_str = "Bun" or evt.arg.arg2_str startswith "Bun ")
+    and proc.exepath != /home/claudecode/.npm-global/bin/claude
+  output: >
+    Process impersonating trusted name via prctl in claude-code
+    (new_name=%evt.arg.arg2_str exe=%proc.exepath command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, defense-evasion]
 
 # TEST-ONLY: not a security signal. Confirms the security-monitor pipeline
 # end to end (rule match -> stdout log -> program_output -> falco-notify.sh
