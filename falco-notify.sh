@@ -35,6 +35,46 @@ priority="$(printf '%s' "$message" |
     head -n1)"
 priority="${priority,,}"
 
+# Auto-stop counting (see docker-compose.yml's stop-watcher service and
+# SECURITY_MONITOR_STOP_THRESHOLD in .env.example). Only counts alerts that
+# mention "claude-code" in their message text -- every real rule in
+# falco/claude-code-rules.yaml includes that literal substring in its
+# `output:` template (only the TEST-ONLY pipeline-sanity rule doesn't,
+# which is intentional: a manual pipeline test must never itself burn down
+# the stop counter). This is deliberately NOT "any CRITICAL alert on this
+# host" -- Falco watches the whole host kernel (see AGENTS.md "Runtime
+# monitoring"), so a bundled default-ruleset CRITICAL alert about some
+# unrelated container/process on the same machine would otherwise count
+# too and could stop claude-code for something it never did.
+#
+# flock serializes the read-increment-write against concurrent
+# falco-notify.sh invocations (Falco spawns one process per alert,
+# keep_alive: false -- two CRITICAL alerts firing close together could
+# otherwise race and lose an increment).
+stop_threshold="${SECURITY_MONITOR_STOP_THRESHOLD:-3}"
+if [[ "$priority" == "critical" || "$priority" == "emergency" ]] \
+    && [[ "$message" == *"claude-code"* ]] \
+    && [ "$stop_threshold" -gt 0 ] 2>/dev/null; then
+    stop_signal_dir="/var/run/falco-stop"
+    mkdir -p "$stop_signal_dir"
+    # `|| true` at the end: bookkeeping failing here (e.g. an unwritable
+    # volume) must never abort the script before the actual desktop
+    # notification below -- losing the stop-count for one alert is far
+    # better than losing the alert itself.
+    (
+        flock -x 9
+        count=0
+        [ -f "$stop_signal_dir/critical_count" ] && count="$(cat "$stop_signal_dir/critical_count")"
+        count=$((count + 1))
+        if [ "$count" -ge "$stop_threshold" ]; then
+            echo 0 > "$stop_signal_dir/critical_count"
+            date -Iseconds > "$stop_signal_dir/trigger"
+        else
+            echo "$count" > "$stop_signal_dir/critical_count"
+        fi
+    ) 9>"$stop_signal_dir/critical_count.lock" || echo "falco-notify.sh: stop-count bookkeeping failed" >&2
+fi
+
 # SECURITY_MONITOR_NOTIFY_TIMEOUT (see docker-compose.yml/.env.example): how
 # long, in milliseconds, the toaster stays up for non-critical alerts before
 # it closes itself.

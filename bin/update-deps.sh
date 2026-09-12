@@ -276,6 +276,14 @@ sync_proxy_auth_sidecar
 # already current the next time --monitor is used. See bin/cc-container.
 sync_security_monitor_sidecar
 
+# Same treatment again for stop-watcher (see bin/cc-container's
+# sync_stop_watcher_sidecar and docker-compose.yml) -- kept in sync with
+# local Dockerfile.stop-watcher/stop-watcher-entrypoint.sh edits regardless
+# of whether --monitor (which now starts stop-watcher automatically, see
+# main()'s SECURITY_MONITOR_STOP_THRESHOLD check) is passed to this
+# invocation.
+sync_stop_watcher_sidecar
+
 compose_profile_args=()
 if [ "$NEEDS_PROXY_AUTH_SIDECAR" = true ]; then
     compose_profile_args=(--profile enterprise-proxy)

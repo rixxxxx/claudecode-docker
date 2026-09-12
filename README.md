@@ -77,8 +77,10 @@ behind it.)
 | `proxy-auth-entrypoint.sh` | Entrypoint for `proxy-auth`, launches `px` against the rendered config |
 | `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco), see "Runtime monitoring (optional)" |
 | `falco/`               | Falco config + custom rules for `security-monitor`             |
-| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification          |
-| `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy` (+ optional `proxy-auth`/`security-monitor`), defines networks |
+| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification, counts alerts toward the auto-stop threshold |
+| `Dockerfile.stop-watcher` | Builds the optional `stop-watcher` sidecar, stops `claude-code` after repeated CRITICAL alerts, see "Runtime monitoring (optional)" |
+| `stop-watcher-entrypoint.sh` | Watches for the stop trigger and calls the Docker API over `docker.sock` |
+| `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy` (+ optional `proxy-auth`/`security-monitor`/`stop-watcher`), defines networks |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
 | `certs/`               | Optional enterprise root CA(s) (`*.crt`), trusted at image build time |
 | `.env.example`         | Template for `.env` — API key, enterprise proxy settings       |
@@ -480,17 +482,52 @@ setting, read by `docker compose` on the host, not something the
 `claude-code` container (or the agent running inside it) can see or
 change — it can't silence its own alarm. See `.env.example`.
 
+**Automatic stop on repeated CRITICAL alerts:** `cc-container --monitor`
+starts a second, intentionally tiny sidecar, `stop-watcher` (no eBPF, no
+extra Linux capabilities), alongside `security-monitor` automatically —
+it stops `claude-code` once `SECURITY_MONITOR_STOP_THRESHOLD` (default 3)
+CRITICAL/EMERGENCY alerts have fired. It's kept as a separate sidecar
+from `security-monitor` itself because it needs `docker.sock` to stop a
+container, and that access is deliberately not given to the same service
+that already runs Falco (see "Trade-offs" below).
+
+To turn this off (keep alerting, drop the auto-stop), set in `.env`:
+
+```bash
+SECURITY_MONITOR_STOP_THRESHOLD=0
+```
+
+`cc-container --monitor` then skips starting `stop-watcher` entirely, so
+no `docker.sock`-bearing container runs at all — not just "counts alerts
+but never acts". (A raw `docker compose --profile monitoring --profile
+auto-stop up -d`, bypassing `cc-container`, always starts `stop-watcher`
+regardless of this setting; there it only gates whether the trigger ever
+fires. Going through `cc-container` is the supported path.)
+
+Only alerts from this repo's own `claude-code`-scoped rules
+(`falco/claude-code-rules.yaml`) count toward the threshold — not every
+CRITICAL alert Falco produces host-wide (see `AGENTS.md` "Runtime
+monitoring" for why that distinction matters). Once stopped,
+`claude-code` stays stopped (`restart: unless-stopped` doesn't restart a
+manually-stopped container) — start it again the normal way
+(`cc-container`) when you're ready to investigate.
+
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with
   extra Linux capabilities (`cap_add`, needed for Falco's eBPF driver) —
   scoped to only that one, never-on-by-default service; `claude-code`
   itself gets nothing extra from this (see `AGENTS.md` "Runtime
   monitoring").
-- No `docker.sock` mount, on purpose (even read-only, that's effectively
-  root-equivalent host access) — container attribution relies on Falco's
-  own `/proc`-based enrichment instead, which is coarser.
+- No `docker.sock` mount in `security-monitor` itself, on purpose (even
+  read-only, that's effectively root-equivalent host access) — container
+  attribution relies on Falco's own `/proc`-based enrichment instead,
+  which is coarser. The one place `docker.sock` does exist in this repo is
+  `stop-watcher` (see "Automatic stop" above), a separate, minimal,
+  never-on-by-default service kept apart from `security-monitor` for
+  exactly this reason — see `AGENTS.md` "Runtime monitoring".
 - This is a detection layer, not prevention — Falco doesn't block
-  anything, it only alerts. The domain allowlist remains the actual
+  anything, it only alerts (optionally followed by a stop once a
+  threshold is hit, see above). The domain allowlist remains the primary
   enforcement mechanism.
 
 **Known blind spots** (limits of syscall-based detection, not bugs to fix):

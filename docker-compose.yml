@@ -148,6 +148,14 @@ services:
       # own default, non-root UID convention, see Dockerfile) if unset,
       # e.g. when invoking docker compose directly.
       - /run/user/${HOST_UID:-1000}/bus:/run/user/${HOST_UID:-1000}/bus
+      # Shared with stop-watcher (see that service below): falco-notify.sh
+      # writes a counter + trigger file here once
+      # SECURITY_MONITOR_STOP_THRESHOLD CRITICAL/EMERGENCY alerts
+      # attributed to claude-code have fired; stop-watcher polls the same
+      # volume from the other side. Mounted here unconditionally --
+      # harmless if the "auto-stop" profile (stop-watcher) isn't running,
+      # the files just sit unread.
+      - falco-stop-signal:/var/run/falco-stop
     environment:
       HOST_PROC: /host/proc
       DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${HOST_UID:-1000}/bus
@@ -164,7 +172,60 @@ services:
       # falco-notify.sh and .env.example). Critical/Emergency alerts ignore
       # this and stay until dismissed.
       SECURITY_MONITOR_NOTIFY_TIMEOUT: ${SECURITY_MONITOR_NOTIFY_TIMEOUT:-8000}
+      # Number of CRITICAL/EMERGENCY alerts attributed to claude-code (see
+      # falco/claude-code-rules.yaml, falco-notify.sh) before signaling
+      # stop-watcher to stop the claude-code container. Set to 0 to disable
+      # (falco-notify.sh treats 0/negative as "never trigger"). Only has an
+      # effect when stop-watcher is also running (the "auto-stop" Compose
+      # profile, see that service below) -- without it, alerts still count
+      # but nothing acts on the trigger file. Default: 3.
+      SECURITY_MONITOR_STOP_THRESHOLD: ${SECURITY_MONITOR_STOP_THRESHOLD:-3}
     restart: unless-stopped
+
+  # Minimal, narrowly-scoped companion to security-monitor: the only thing
+  # in this repo with docker.sock access (see AGENTS.md "Runtime
+  # monitoring" and tests/security/test_static_hardening.sh, which enforces
+  # that this stays the *only* service with it). Stopping a container
+  # requires talking to the Docker API from somewhere -- kept out of
+  # security-monitor itself deliberately, since that service already runs
+  # with cap_add/apparmor:unconfined for eBPF, and adding docker.sock there
+  # too would let a single Falco/eBPF compromise pivot into full
+  # host-Docker control instead of just this one container's blast radius.
+  # This service does exactly one job: watch for the trigger file
+  # security-monitor writes to the shared falco-stop-signal volume, then
+  # stop the claude-code container in the same Compose project. No
+  # cap_add, no eBPF, no network (network_mode: none -- docker.sock is a
+  # filesystem socket, not a network endpoint, so this doesn't need one
+  # either).
+  #
+  # Separate "auto-stop" Compose profile so a raw `docker compose`
+  # invocation (bypassing cc-container) still leaves this off unless asked
+  # for explicitly -- but `bin/cc-container`'s `--monitor` handling adds
+  # this profile automatically alongside "monitoring" (see main() there),
+  # so in practice `cc-container --monitor` starts both together. The only
+  # way to skip stop-watcher while still using --monitor is
+  # SECURITY_MONITOR_STOP_THRESHOLD=0 in .env, which cc-container checks
+  # before adding this profile.
+  #
+  # VERIFY (no Docker access at authoring time, see
+  # stop-watcher-entrypoint.sh): self-discovering this container's own ID
+  # via /etc/hostname, and the exact docker.sock API filter syntax --
+  # written from documentation knowledge, not confirmed on a live host.
+  stop-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.stop-watcher
+    image: claude-code-stop-watcher:latest
+    profiles:
+      - auto-stop
+    volumes:
+      - falco-stop-signal:/var/run/falco-stop
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: none
+    restart: unless-stopped
+
+volumes:
+  falco-stop-signal:
 
 networks:
   internal:

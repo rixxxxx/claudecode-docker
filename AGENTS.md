@@ -23,7 +23,9 @@ Key files:
 | `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (px) for NTLM/Kerberos corporate proxies |
 | `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco) — see "Runtime monitoring" below |
 | `falco/`               | Falco config (`falco.yaml`) + custom rules (`claude-code-rules.yaml`) for `security-monitor` |
-| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification via the host's D-Bus session bus |
+| `falco-notify.sh`      | Turns a Falco alert into a native desktop notification via the host's D-Bus session bus; also counts CRITICAL/EMERGENCY alerts toward the auto-stop threshold |
+| `Dockerfile.stop-watcher` | Builds the optional `stop-watcher` sidecar — see "Runtime monitoring" below |
+| `stop-watcher-entrypoint.sh` | Polls for the trigger file `falco-notify.sh` writes, stops `claude-code` via `docker.sock` |
 | `entrypoint.sh`        | Container entrypoint (terminal setup, welcome banner)       |
 
 ## Security-critical files — change with care
@@ -51,16 +53,33 @@ That's the actual purpose of this repo, not incidental config.
   `claude-code` could reach it too, the sandbox could bypass Squid's domain
   allowlist entirely by talking to `proxy-auth` directly. See "Enterprise
   proxy support" below.
-- `security-monitor` (see "Runtime monitoring" below) is the **one
-  deliberate exception** to "no privileged/root/extra capabilities" in
-  this repo — eBPF-based syscall observation needs `cap_add`. This
-  exception is scoped narrowly: only that one service, never started by
-  default (`monitoring` Compose profile), and it grants `claude-code`
-  itself nothing. Don't extend `cap_add`/`privileged`/a `docker.sock`
-  mount to any other service, and don't add capabilities to
-  `security-monitor` beyond what Falco's modern eBPF driver actually
-  needs. `tests/security/test_static_hardening.sh` enforces this — its
-  checks exempt `security-monitor` specifically, nothing else.
+- `security-monitor` (see "Runtime monitoring" below) is **one deliberate
+  exception** to "no privileged/root/extra capabilities" in this repo —
+  eBPF-based syscall observation needs `cap_add`. This exception is scoped
+  narrowly: only that one service, never started by default (`monitoring`
+  Compose profile), and it grants `claude-code` itself nothing. Don't
+  extend `cap_add`/`privileged` to any other service, and don't add
+  capabilities to `security-monitor` beyond what Falco's modern eBPF
+  driver actually needs. `tests/security/test_static_hardening.sh`
+  enforces this — its checks exempt `security-monitor` specifically,
+  nothing else.
+- `stop-watcher` (see "Runtime monitoring" below) is the **other
+  deliberate exception**, this time to "no `docker.sock` mount" — stopping
+  a container needs the Docker API from somewhere. Scoped just as
+  narrowly: only that one service, never started absent `--monitor` itself
+  (`bin/cc-container`'s `main()` adds the `auto-stop` Compose profile
+  automatically alongside `monitoring` unless `SECURITY_MONITOR_STOP_THRESHOLD=0`
+  in `.env` — kept as its own Compose profile, not folded directly into
+  `monitoring` in `docker-compose.yml`, so a raw `docker compose` call
+  bypassing `cc-container` still needs it requested explicitly), no
+  `cap_add`/`privileged` of its own, and it deliberately does **not**
+  grant `docker.sock` to `security-monitor` itself — that service already
+  runs with `cap_add`/`apparmor:unconfined` for eBPF, so adding
+  `docker.sock` there too would let one Falco/eBPF compromise pivot into
+  full host-Docker control instead of just this one container. Don't
+  extend a `docker.sock` mount to any other service, including
+  `security-monitor`. `tests/security/test_static_hardening.sh` enforces
+  this — its checks exempt `stop-watcher` specifically, nothing else.
 
 ## Enterprise proxy support
 
@@ -191,6 +210,53 @@ touching this code:
     must stay somewhere that agent has no visibility into or control over
     (consistent with `claude-code` having no `docker.sock` and no network
     path to `security-monitor` to begin with).
+- **Auto-stop** (`stop-watcher`): stops `claude-code` automatically after
+  **`SECURITY_MONITOR_STOP_THRESHOLD`** (`.env`, default 3)
+  CRITICAL/EMERGENCY alerts attributed to it. `cc-container --monitor`
+  starts `stop-watcher` alongside `security-monitor` automatically (adds
+  the `auto-stop` Compose profile in addition to `monitoring`) — there is
+  no separate `--auto-stop` flag. The only way to keep `stop-watcher` from
+  starting at all while still using `--monitor` is
+  `SECURITY_MONITOR_STOP_THRESHOLD=0` in `.env`, which `main()` checks
+  before adding the profile (see "one deliberate exception" above).
+  - `falco-notify.sh` does the counting (persisted in
+    `falco-stop-signal`, a named volume shared with `stop-watcher`, guarded
+    by `flock` against the race of two alerts firing close together —
+    Falco spawns one `falco-notify.sh` process per alert, `keep_alive:
+    false`). At the threshold it resets the counter and writes a trigger
+    file; it does **not** talk to `docker.sock` itself.
+  - Counting is scoped to alerts whose message text contains the literal
+    substring `claude-code` — every real rule in
+    `falco/claude-code-rules.yaml` includes that in its `output:` template
+    (the TEST-ONLY pipeline-sanity rule deliberately doesn't, so a manual
+    pipeline test never burns down the stop counter). This is intentionally
+    narrower than "any CRITICAL alert Falco produces": `security-monitor`
+    watches the whole host kernel (see intro above), so a bundled
+    default-ruleset CRITICAL alert about an unrelated container/process on
+    the same host would otherwise count too and could stop `claude-code`
+    for something it never did.
+  - `stop-watcher` (see the "one deliberate exception" note above for why
+    this is a separate service, not folded into `security-monitor`) polls
+    the trigger file and, once it appears, resolves its own
+    `com.docker.compose.project` label via `docker.sock` (self-ID read from
+    `/etc/hostname` — Docker's default container hostname when a service
+    doesn't set `hostname:` explicitly, which none here do), then stops
+    whichever container in that same project carries
+    `com.docker.compose.service=claude-code`. Matching on the Compose
+    project/service labels rather than a fixed container name is required
+    because `claude-code`'s container name is dynamic per workspace (see
+    `derive_compose_project_name()` in `bin/cc-container`).
+  - **Not yet confirmed on a live host** (no Docker access at authoring
+    time): the `/etc/hostname`-as-self-ID assumption, and the exact
+    `docker.sock` HTTP API filter syntax `stop-watcher-entrypoint.sh` sends.
+    Same category of open item as the rest of this "Runtime monitoring"
+    section's `VERIFY` notes until exercised for real.
+  - Bypassing `cc-container` with a raw `docker compose --profile
+    monitoring --profile auto-stop up -d` always starts `stop-watcher`
+    regardless of `SECURITY_MONITOR_STOP_THRESHOLD` — there, the variable
+    only gates whether `falco-notify.sh` ever writes the trigger file, not
+    whether the container runs. Only `cc-container`'s own flag handling
+    reads it to decide whether to add the profile in the first place.
 - `falco/falco.yaml` schema drifted across three keys between whatever
   Falco version the doc-only draft assumed and the 0.39.2 actually
   pulled: `rules_file` → `rules_files` (plural; singular still works with

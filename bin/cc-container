@@ -287,6 +287,28 @@ sync_security_monitor_sidecar() {
     fi
 }
 
+# sync_stop_watcher_sidecar -- same treatment as sync_security_monitor_sidecar
+# above, for the stop-watcher companion service (see docker-compose.yml and
+# AGENTS.md "Runtime monitoring"). Kept in sync with local
+# Dockerfile.stop-watcher/stop-watcher-entrypoint.sh edits regardless of
+# whether --monitor ends up starting it this particular invocation (see
+# main()'s SECURITY_MONITOR_STOP_THRESHOLD check).
+sync_stop_watcher_sidecar() {
+    local image_before image_after
+    image_before="$(image_id claude-code-stop-watcher:latest)"
+
+    echo "==> Rebuilding stop-watcher image (cached -- picks up local Dockerfile.stop-watcher/stop-watcher-entrypoint.sh changes)..."
+    docker compose --profile auto-stop build stop-watcher
+
+    image_after="$(image_id claude-code-stop-watcher:latest)"
+
+    if [ "$image_before" != "$image_after" ] \
+        && [ -n "$(docker compose --profile auto-stop ps -q stop-watcher 2>/dev/null)" ]; then
+        echo "==> stop-watcher image changed -- recreating so it picks up the new image..."
+        docker compose --profile auto-stop up -d --force-recreate stop-watcher
+    fi
+}
+
 main() {
     # docker compose auto-loads .env for its own ${...} interpolation, but
     # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
@@ -355,6 +377,19 @@ main() {
     if [ "$monitor_enabled" = true ]; then
         compose_profile_args+=(--profile monitoring)
         echo "==> Runtime monitoring: starting security-monitor (Falco)"
+
+        # stop-watcher (see docker-compose.yml and AGENTS.md "Runtime
+        # monitoring") rides along with --monitor automatically -- no
+        # separate flag. SECURITY_MONITOR_STOP_THRESHOLD is sourced from
+        # .env above (set -a/source/set +a); the only way to keep
+        # stop-watcher from starting at all is setting it to exactly "0"
+        # there. A raw `docker compose --profile monitoring up -d` (no
+        # --profile auto-stop, bypassing cc-container) still leaves
+        # stop-watcher off by default -- this auto-add only happens here.
+        if [ "${SECURITY_MONITOR_STOP_THRESHOLD:-3}" != "0" ]; then
+            compose_profile_args+=(--profile auto-stop)
+            echo "==> Auto-stop: starting stop-watcher (stops claude-code after \${SECURITY_MONITOR_STOP_THRESHOLD:-3} CRITICAL alerts; set SECURITY_MONITOR_STOP_THRESHOLD=0 in .env to disable)"
+        fi
     fi
 
     if [ "${1:-}" = "--update" ]; then

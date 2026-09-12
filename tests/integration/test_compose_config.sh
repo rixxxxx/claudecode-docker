@@ -18,7 +18,22 @@ test_enterprise_proxy_profile_config_is_valid() {
     assert_success "${COMPOSE[@]}" --profile enterprise-proxy config -q
 }
 
+test_monitoring_profile_config_is_valid() {
+    assert_success "${COMPOSE[@]}" --profile monitoring config -q
+}
+
+test_auto_stop_profile_config_is_valid() {
+    # auto-stop (stop-watcher, see AGENTS.md "Runtime monitoring") is added
+    # automatically by bin/cc-container's --monitor handling in practice,
+    # but Compose profiles are independent, so also check it resolves
+    # alone.
+    assert_success "${COMPOSE[@]}" --profile auto-stop config -q
+    assert_success "${COMPOSE[@]}" --profile monitoring --profile auto-stop config -q
+}
+
 run_test test_default_profile_config_is_valid
 run_test test_enterprise_proxy_profile_config_is_valid
+run_test test_monitoring_profile_config_is_valid
+run_test test_auto_stop_profile_config_is_valid
 
 print_summary

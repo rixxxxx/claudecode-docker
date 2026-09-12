@@ -9,8 +9,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../lib/assert.sh"
 
-COMPOSE=(docker compose -f "$REPO_ROOT/docker-compose.yml" --profile enterprise-proxy --profile monitoring)
+COMPOSE=(docker compose -f "$REPO_ROOT/docker-compose.yml" --profile enterprise-proxy --profile monitoring --profile auto-stop)
 RESOLVED_CONFIG="$("${COMPOSE[@]}" config)"
+
+# strip_service_block -- resolved Compose config for every service except
+# the one named, used below to keep the various hardening checks strict
+# for everyone except a specific, deliberately-scoped exception.
+strip_service_block() {
+    local service="$1"
+    awk -v svc="  ${service}:" '
+        $0 == svc { skip=1; next }
+        skip && /^  [a-zA-Z]/ { skip=0 }
+        skip && /^[a-zA-Z]/ { skip=0 }
+        !skip { print }
+    ' <<< "$RESOLVED_CONFIG"
+}
 
 # security-monitor (Falco, see AGENTS.md "Runtime monitoring") is the one
 # deliberate, narrowly-scoped exception to "no privileged/cap_add" in this
@@ -18,12 +31,16 @@ RESOLVED_CONFIG="$("${COMPOSE[@]}" config)"
 # claude-code itself anything. Excluded here so the checks below stay
 # strict for every other service; security-monitor's own privilege scope
 # is asserted separately (test_only_security_monitor_has_capabilities).
-CONFIG_WITHOUT_SECURITY_MONITOR="$(awk '
-    /^  security-monitor:$/ { skip=1; next }
-    skip && /^  [a-zA-Z]/ { skip=0 }
-    skip && /^[a-zA-Z]/ { skip=0 }
-    !skip { print }
-' <<< "$RESOLVED_CONFIG")"
+CONFIG_WITHOUT_SECURITY_MONITOR="$(strip_service_block security-monitor)"
+
+# stop-watcher (see AGENTS.md "Runtime monitoring") is the one deliberate
+# exception to "no docker.sock" in this repo -- stopping a container needs
+# the Docker API from somewhere, and this repo keeps that access out of
+# security-monitor itself on purpose (see docker-compose.yml's stop-watcher
+# service comment). Excluded here so the docker.sock check stays strict for
+# every other service, including security-monitor; stop-watcher's own scope
+# is asserted separately (test_only_stop_watcher_has_docker_socket).
+CONFIG_WITHOUT_STOP_WATCHER="$(strip_service_block stop-watcher)"
 
 test_no_service_is_privileged() {
     # Applies to every service, including security-monitor: even Falco
@@ -50,10 +67,18 @@ test_only_security_monitor_has_capabilities() {
 test_no_service_mounts_docker_socket() {
     # Even a read-only docker.sock mount is effectively root-equivalent
     # host access (the Docker API itself has no granular read/write
-    # distinction) -- must never be mounted into any service here,
-    # including security-monitor (deliberately not exempted -- see
-    # AGENTS.md "Runtime monitoring" for why it doesn't need this).
-    assert_not_contains "$RESOLVED_CONFIG" "docker.sock"
+    # distinction) -- must never be mounted into any service other than
+    # stop-watcher, including security-monitor (deliberately not exempted
+    # -- see AGENTS.md "Runtime monitoring" for why it doesn't need this).
+    assert_not_contains "$CONFIG_WITHOUT_STOP_WATCHER" "docker.sock"
+}
+
+test_only_stop_watcher_has_docker_socket() {
+    # Sanity check that the exemption above is actually being exercised
+    # against a real docker.sock mount, not silently vacuous (e.g. if the
+    # service got renamed and strip_service_block no longer matches
+    # anything).
+    assert_contains "$RESOLVED_CONFIG" "docker.sock"
 }
 
 test_dockerfiles_dont_copy_full_build_context() {
@@ -93,6 +118,7 @@ run_test test_no_service_is_privileged
 run_test test_no_service_adds_capabilities
 run_test test_only_security_monitor_has_capabilities
 run_test test_no_service_mounts_docker_socket
+run_test test_only_stop_watcher_has_docker_socket
 run_test test_dockerfiles_dont_copy_full_build_context
 run_test test_dockerfiles_dont_leak_proxy_credentials_via_build_args
 
