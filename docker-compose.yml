@@ -198,13 +198,17 @@ services:
   # host-Docker control instead of just this one container's blast radius.
   # This service does exactly one job: watch for trigger.<container_id>
   # files security-monitor writes to the shared falco-stop-signal volume,
-  # then stop that exact container id -- not necessarily this same Compose
-  # project's own claude-code sibling, see stop-watcher-entrypoint.sh for
-  # why matching on the alert's own container id is more correct than
-  # assuming it's always "my own sibling" in a multi-workspace setup. No
-  # cap_add, no eBPF, no network (network_mode: none -- docker.sock is a
-  # filesystem socket, not a network endpoint, so this doesn't need one
-  # either).
+  # then -- only after confirming via docker.sock that the named container
+  # actually belongs to this same Compose project and is the claude-code
+  # service specifically (see stop-watcher-entrypoint.sh) -- stop it. That
+  # check matters because security-monitor's eBPF view spans the whole
+  # host kernel, not just this one Compose project (see AGENTS.md "Runtime
+  # monitoring"), so a trigger file here could in principle name a
+  # different workspace's container; the same-project check is what keeps
+  # each stop-watcher instance limited to stopping only its own
+  # claude-code sibling, never anyone else's. No cap_add, no eBPF, no
+  # network (network_mode: none -- docker.sock is a filesystem socket, not
+  # a network endpoint, so this doesn't need one either).
   #
   # Separate "auto-stop" Compose profile so a raw `docker compose`
   # invocation (bypassing cc-container) still leaves this off unless asked
@@ -218,8 +222,10 @@ services:
   # VERIFY (no Docker access at authoring time): falco-notify.sh's
   # assumption that Falco resolves container.id without a docker.sock
   # mount (unlike container.name/container.image.repository, already
-  # confirmed to need one -- see AGENTS.md) -- written from documentation
-  # knowledge, not confirmed on a live host.
+  # confirmed to need one -- see AGENTS.md); and
+  # stop-watcher-entrypoint.sh's /etc/hostname-as-self-id assumption used
+  # for the same-Compose-project check above. Both written from
+  # documentation knowledge, not confirmed on a live host.
   stop-watcher:
     build:
       context: .

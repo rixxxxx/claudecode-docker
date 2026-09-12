@@ -251,21 +251,38 @@ touching this code:
     non-`claude-code` container/process on the same host would otherwise
     count too.
   - `stop-watcher` (see the "one deliberate exception" note above for why
-    this is a separate service, not folded into `security-monitor`) just
-    polls for `trigger.<container_id>` files and stops that exact
-    container id directly via `docker.sock` — no Compose-project/label
-    resolution, no self-ID lookup; the container id comes straight from
-    the alert that fired. Simpler and more correct than the
-    Compose-sibling-guessing approach it replaced.
+    this is a separate service, not folded into `security-monitor`) polls
+    for `trigger.<container_id>` files and, for each one, first resolves
+    its OWN `com.docker.compose.project` label via `docker.sock` (self id
+    from `/etc/hostname` — Docker's default container hostname, which none
+    of this repo's services override), then looks up the *target*
+    container's `com.docker.compose.project`/`com.docker.compose.service`
+    labels the same way. It only actually stops the container if both
+    match (same project, `service=claude-code`) — otherwise it logs a
+    refusal and drops the trigger file. This is the same-instance
+    enforcement: without it, one workspace's `stop-watcher` (unrestricted
+    `docker.sock` is inherently host-wide, not scoped to "its own"
+    containers by anything Docker itself enforces) could end up stopping a
+    *different* workspace's `claude-code` if its own `security-monitor`
+    ever mis-attributed a foreign container's alerts into its own
+    `falco-stop-signal` volume (see the counting note above — the trigger
+    filename alone already names the right target, but nothing stopped a
+    stop-watcher from acting on a trigger naming someone else's container
+    before this check existed). Resolves its own project once at startup;
+    if that lookup ever fails, the container refuses to start at all
+    (fail closed — `restart: unless-stopped` keeps retrying) rather than
+    run without being sure of its own scope.
   - **Not yet confirmed on a live host** (no Docker access at authoring
     time): that `container.id` resolves correctly without a `docker.sock`
     mount in `security-monitor` (unlike `container.name`/
-    `container.image.repository`, already confirmed to need one). If this
-    assumption is wrong, `container_id` parsing in `falco-notify.sh` comes
-    back empty and the alert is simply skipped for counting purposes (fails
-    closed, logged to stderr) rather than miscounting. Same category of
-    open item as the rest of this "Runtime monitoring" section's `VERIFY`
-    notes until exercised for real.
+    `container.image.repository`, already confirmed to need one) — if
+    wrong, `container_id` parsing in `falco-notify.sh` comes back empty
+    and the alert is simply skipped for counting purposes (fails closed,
+    logged to stderr) rather than miscounting; and the `/etc/hostname`-as-
+    self-id assumption in `stop-watcher-entrypoint.sh`, now load-bearing
+    for the same-instance check too, not just for picking the right
+    target. Same category of open item as the rest of this "Runtime
+    monitoring" section's `VERIFY` notes until exercised for real.
   - Bypassing `cc-container` with a raw `docker compose --profile
     monitoring --profile auto-stop up -d` always starts `stop-watcher`
     regardless of `SECURITY_MONITOR_STOP_THRESHOLD` — there, the variable

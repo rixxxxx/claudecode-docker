@@ -496,7 +496,12 @@ If you run more than one workspace at once with `--monitor`, this is
 counted per `claude-code` container, not globally — `security-monitor`
 watches the whole host kernel (see intro above), so without this it could
 otherwise stop one workspace's `claude-code` over alerts that actually
-came from a different workspace's. See `AGENTS.md` "Runtime monitoring"
+came from a different workspace's. `stop-watcher` also double-checks over
+`docker.sock` that a container it's about to stop actually belongs to its
+own workspace (same Compose project) before acting — so even if one
+workspace's `security-monitor` ends up counting another workspace's
+alerts, only that *other* workspace's own `stop-watcher` will ever
+actually stop it, never this one. See `AGENTS.md` "Runtime monitoring"
 for the mechanics.
 
 To turn this off (keep alerting, drop the auto-stop), set in `.env`:
