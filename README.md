@@ -473,6 +473,13 @@ but it does mean this only works while you have an active graphical
 session on the machine running Docker; it won't do anything useful on a
 headless server.
 
+Set `SECURITY_MONITOR_NOTIFY=false` in `.env` to turn the popup off
+without losing anything else — alerts keep landing in `docker logs
+security-monitor` (`stdout_output`) regardless. Deliberately a `.env`-only
+setting, read by `docker compose` on the host, not something the
+`claude-code` container (or the agent running inside it) can see or
+change — it can't silence its own alarm. See `.env.example`.
+
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with
   extra Linux capabilities (`cap_add`, needed for Falco's eBPF driver) —

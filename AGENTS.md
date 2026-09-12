@@ -181,6 +181,16 @@ touching this code:
     notifications only work with an active graphical Linux session (D-Bus
     session bus running) on the host; deliberate trade-off, not a bug, for
     a tool meant to run on a dev workstation.
+  - **`SECURITY_MONITOR_NOTIFY`** (`.env`, see `.env.example`) toggles just
+    the `notify-send` popup in `falco-notify.sh` — `stdout_output` keeps
+    logging every alert either way. Deliberately wired only through
+    `docker compose`'s own `.env` resolution
+    (`docker-compose.yml`'s `security-monitor.environment`), never read
+    from inside `claude-code`: the whole point of this sidecar is watching
+    the sandboxed agent from outside it, so the toggle for its own alarm
+    must stay somewhere that agent has no visibility into or control over
+    (consistent with `claude-code` having no `docker.sock` and no network
+    path to `security-monitor` to begin with).
 - `falco/falco.yaml` schema drifted across three keys between whatever
   Falco version the doc-only draft assumed and the 0.39.2 actually
   pulled: `rules_file` → `rules_files` (plural; singular still works with

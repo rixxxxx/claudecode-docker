@@ -19,6 +19,13 @@ set -euo pipefail
 
 message="$(cat)"
 
+# SECURITY_MONITOR_NOTIFY (see docker-compose.yml/.env.example): host-side
+# on/off switch for just this popup. Falco keeps sending alerts here either
+# way, so stdout_output (docker logs) is unaffected.
+case "${SECURITY_MONITOR_NOTIFY:-true}" in
+    false | 0 | no | off) exit 0 ;;
+esac
+
 if [ "$(id -u)" = 0 ] && [ -n "${HOST_UID:-}" ]; then
     setpriv --reuid="$HOST_UID" --regid="$HOST_UID" --clear-groups \
         notify-send --urgency=critical "Falco: claude-code alert" "$message"

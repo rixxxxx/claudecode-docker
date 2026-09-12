@@ -155,6 +155,11 @@ services:
       # user who actually owns the D-Bus session bus above -- see
       # Dockerfile.security-monitor's verification note.
       HOST_UID: ${HOST_UID:-1000}
+      # On/off switch for the desktop notification popup only (see
+      # falco-notify.sh and .env.example) -- resolved from .env by docker
+      # compose on the host at up/recreate time, never read from inside
+      # claude-code. Alerts keep landing in `docker logs` either way.
+      SECURITY_MONITOR_NOTIFY: ${SECURITY_MONITOR_NOTIFY:-true}
     restart: unless-stopped
 
 networks:
