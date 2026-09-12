@@ -525,6 +525,22 @@ monitoring" for why that distinction matters). Once stopped,
 manually-stopped container) — start it again the normal way
 (`cc-container`) when you're ready to investigate.
 
+**Testing this without waiting for a real violation:** `falco/claude-code-rules.yaml`
+includes a harmless `TEST - Falco auto-stop pipeline check` rule for
+exactly this. Run, inside the `claude-code` container,
+`SECURITY_MONITOR_STOP_THRESHOLD` times in a row (default 3):
+
+```bash
+touch /tmp/falco-stop-test-trigger
+```
+
+Each run logs a CRITICAL "TEST ALERT" in `docker compose logs -f
+security-monitor`; after the last one, `claude-code` genuinely stops —
+only run this against a container you're fine losing. This is separate
+from the also-included `TEST - Falco pipeline sanity check` rule
+(`touch /tmp/falco-pipeline-test`), which checks that alerts reach you at
+all but is deliberately excluded from the auto-stop count.
+
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with
   extra Linux capabilities (`cap_add`, needed for Falco's eBPF driver) —

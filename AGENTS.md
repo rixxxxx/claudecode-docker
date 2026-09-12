@@ -250,6 +250,17 @@ touching this code:
     default-ruleset CRITICAL alert about a completely unrelated,
     non-`claude-code` container/process on the same host would otherwise
     count too.
+  - `falco/claude-code-rules.yaml` has a second TEST-ONLY rule, `TEST -
+    Falco auto-stop pipeline check`, that goes the other way on purpose:
+    its output *does* include `claude-code`, specifically so the auto-stop
+    path itself (counter → trigger file → `stop-watcher` actually stopping
+    the container) has a harmless way to be exercised end to end, instead
+    of needing to reproduce a real CRITICAL violation
+    `SECURITY_MONITOR_STOP_THRESHOLD` times in a row. Trigger: `touch
+    /tmp/falco-stop-test-trigger` inside `claude-code`, repeated
+    `SECURITY_MONITOR_STOP_THRESHOLD` times (default 3) — the container
+    genuinely stops after the last one. Only run this against a container
+    you intend to have stopped.
   - `stop-watcher` (see the "one deliberate exception" note above for why
     this is a separate service, not folded into `security-monitor`) polls
     for `trigger.<container_id>` files and, for each one, first resolves

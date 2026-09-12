@@ -32,9 +32,13 @@ priority="${priority,,}"
 # SECURITY_MONITOR_STOP_THRESHOLD in .env.example). Only counts alerts that
 # mention "claude-code" in their message text -- every real rule in
 # falco/claude-code-rules.yaml includes that literal substring in its
-# `output:` template (only the TEST-ONLY pipeline-sanity rule doesn't,
-# which is intentional: a manual pipeline test must never itself burn down
-# the stop counter). This is deliberately NOT "any CRITICAL alert on this
+# `output:` template. Two TEST-ONLY rules are exceptions, on purpose and in
+# opposite directions: "TEST - Falco pipeline sanity check" deliberately
+# omits "claude-code" so a manual pipeline test never burns down the stop
+# counter, while "TEST - Falco auto-stop pipeline check" deliberately
+# includes it so the auto-stop path itself has a harmless way to be
+# exercised end to end (see that rule's comment in claude-code-rules.yaml).
+# This is deliberately NOT "any CRITICAL alert on this
 # host" -- Falco watches the whole host kernel (see AGENTS.md "Runtime
 # monitoring"), so a bundled default-ruleset CRITICAL alert about some
 # unrelated container/process on the same machine would otherwise count

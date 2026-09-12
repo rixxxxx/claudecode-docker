@@ -446,3 +446,48 @@
     (command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, test]
+
+# TEST-ONLY: not a real security signal, but unlike the pipeline-sanity
+# rule above, this one's output deliberately DOES contain the literal
+# substring "claude-code" -- falco-notify.sh's auto-stop counter only
+# increments on messages that do (see its comment block: "Only counts
+# alerts that mention claude-code in their message text ... the TEST-ONLY
+# pipeline-sanity rule doesn't, which is intentional"). This rule is the
+# deliberate counter-example: it exists specifically so the *auto-stop*
+# path (rule match -> falco-notify.sh counter -> trigger file ->
+# stop-watcher actually stopping the container, see
+# stop-watcher-entrypoint.sh) can be exercised end-to-end with a harmless,
+# unambiguous trigger, instead of needing to reproduce a real CRITICAL
+# violation (privilege escalation, credential read, etc.) three times.
+#
+# Consequence, not a bug: running the trigger below
+# SECURITY_MONITOR_STOP_THRESHOLD times in a row (default 3, see
+# .env.example) against a live claude-code container WILL genuinely stop
+# that container via stop-watcher. Only use this against a container you
+# intend to have stopped. Safe to delete this block any time -- it lives
+# only here, no Dockerfile/Compose change depends on it.
+#
+# Trigger (inside the claude-code container), repeated
+# SECURITY_MONITOR_STOP_THRESHOLD times:
+#   touch /tmp/falco-stop-test-trigger
+# Expect: a "TEST ALERT" CRITICAL line in `docker compose logs -f
+# security-monitor` each time, and after the Nth run, the claude-code
+# container itself stopping (`docker compose ps` shows it exited).
+# Clean up between runs / afterwards with:
+#   rm -f /tmp/falco-stop-test-trigger
+- rule: TEST - Falco auto-stop pipeline check
+  desc: >
+    Test-only rule with no security meaning. Confirms the auto-stop path
+    (falco-notify.sh's CRITICAL/EMERGENCY counter and stop-watcher) works
+    end to end, via one specific harmless command repeated
+    SECURITY_MONITOR_STOP_THRESHOLD times.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name = touch
+    and proc.args contains "falco-stop-test-trigger"
+  output: >
+    TEST ALERT - Falco auto-stop pipeline test for claude-code
+    (command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, test]
