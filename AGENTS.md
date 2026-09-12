@@ -372,6 +372,24 @@ touching this code:
     in-process) won't trigger any `spawned_process`-based rule. The
     npm-install ancestor check only looks 5 levels up
     (`proc.aname[2..5]`).
+- **Startup ordering**: `claude-code` has an optional `depends_on` on both
+  `security-monitor` and `stop-watcher` (`condition: service_healthy`,
+  `required: false`). `required: false` is what makes this safe when the
+  `monitoring`/`auto-stop` profiles aren't active at all — without it,
+  Compose would refuse to resolve the file at all ("service claude-code
+  depends on undefined service ...") on a plain `docker compose up -d` or
+  `cc-container` without `--monitor`, since the two sidecars wouldn't
+  exist as services in that run. When the profiles ARE active,
+  `claude-code` genuinely waits for both to report healthy first, same as
+  its existing `egress-proxy` dependency. Both sidecars needed a
+  `healthcheck:` added for this to have something to wait on
+  (`security-monitor`: `pgrep -x falco`, since `network_mode: none` and no
+  `docker.sock` there rule out an HTTP probe or reading its own container
+  logs — this only proves the process hasn't died, not that the eBPF probe
+  attached or rules loaded cleanly; `stop-watcher`: `curl` against
+  `docker.sock`'s own `/_ping`, the one thing that service actually
+  depends on). `security-monitor`'s `pgrep` needs `procps` added to its
+  `apt-get install` list.
 - `Dockerfile.security-monitor`'s `apt-get install` also needs
   `util-linux` now (for `setpriv`, see above), in addition to
   `libnotify-bin`.

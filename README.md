@@ -436,6 +436,13 @@ working.
 `falco-notify.sh` changed locally), regardless of whether `--monitor` is
 passed to that particular invocation.
 
+When `--monitor` is used, `claude-code` waits for `security-monitor` (and
+`stop-watcher`, its auto-stop companion — see below) to actually report
+healthy before it starts, so monitoring is already watching from the
+first syscall `claude-code` makes, not started in a race against it. This
+adds a few seconds to startup; without `--monitor`, it has no effect at
+all.
+
 **What it watches for** (see `falco/claude-code-rules.yaml`, plus Falco's
 own bundled default ruleset):
 - An unexpected interactive shell spawned inside `claude-code` (typical of

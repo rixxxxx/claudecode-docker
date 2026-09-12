@@ -40,6 +40,20 @@ services:
     depends_on:
       egress-proxy:
         condition: service_healthy
+      # security-monitor/stop-watcher only exist at all when their
+      # profiles ("monitoring"/"auto-stop", see those services below) are
+      # active -- required: false tells Compose to silently skip this
+      # dependency rather than error out ("service claude-code depends on
+      # undefined service ...") when a profile isn't in play, e.g. a plain
+      # `docker compose up -d` or `cc-container` without --monitor. When
+      # the profile IS active, claude-code still waits for the real
+      # service_healthy condition below, same as egress-proxy above.
+      security-monitor:
+        condition: service_healthy
+        required: false
+      stop-watcher:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
 
   egress-proxy:
@@ -138,6 +152,20 @@ services:
     security_opt:
       - apparmor:unconfined
     network_mode: none
+    # network_mode: none rules out an HTTP/gRPC probe (falco.yaml also
+    # leaves both disabled, see that file); Falco has no docker.sock here
+    # either (deliberately, see the service-level comment above) to read
+    # its own container logs. pgrep is the honest option left: it only
+    # proves the falco process itself hasn't died/crash-looped, not that
+    # the eBPF probe attached or rules loaded cleanly -- but it's what
+    # `depends_on: security-monitor: condition: service_healthy` on
+    # claude-code (see that service) can actually check from outside.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x falco >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     volumes:
       - /proc:/host/proc:ro
       - /etc:/host/etc:ro
@@ -237,6 +265,17 @@ services:
       - falco-stop-signal:/var/run/falco-stop
       - /var/run/docker.sock:/var/run/docker.sock
     network_mode: none
+    # docker.sock is a filesystem socket (see network_mode: none note
+    # above), so curl can hit it directly regardless of network namespace.
+    # /_ping is the Docker Engine API's own liveness endpoint -- confirms
+    # the one thing this service actually depends on (docker.sock being
+    # reachable) without needing docker CLI in this minimal Alpine image.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "--unix-socket", "/var/run/docker.sock", "http://localhost/_ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

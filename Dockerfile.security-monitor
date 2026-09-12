@@ -24,9 +24,12 @@
 
 FROM falcosecurity/falco-no-driver:latest
 
+# procps is for pgrep, used by this service's healthcheck in
+# docker-compose.yml (claude-code's depends_on waits on it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnotify-bin \
     util-linux \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY falco/falco.yaml /etc/falco/falco.yaml
