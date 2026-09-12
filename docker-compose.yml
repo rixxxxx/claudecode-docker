@@ -160,6 +160,10 @@ services:
       # compose on the host at up/recreate time, never read from inside
       # claude-code. Alerts keep landing in `docker logs` either way.
       SECURITY_MONITOR_NOTIFY: ${SECURITY_MONITOR_NOTIFY:-true}
+      # How long (ms) non-critical popups stay up before auto-closing (see
+      # falco-notify.sh and .env.example). Critical/Emergency alerts ignore
+      # this and stay until dismissed.
+      SECURITY_MONITOR_NOTIFY_TIMEOUT: ${SECURITY_MONITOR_NOTIFY_TIMEOUT:-8000}
     restart: unless-stopped
 
 networks:

@@ -26,9 +26,51 @@ case "${SECURITY_MONITOR_NOTIFY:-true}" in
     false | 0 | no | off) exit 0 ;;
 esac
 
+# Falco prefixes every non-json alert line with its priority word (e.g.
+# "2026-09-12T10:00:00.000000000+0000: Warning ..."), so pull that back out
+# to pick urgency/icon and, for the toaster behaviour, whether the popup is
+# allowed to auto-close at all.
+priority="$(printf '%s' "$message" |
+    grep -oiE '\b(Emergency|Alert|Critical|Error|Warning|Notice|Informational|Debug)\b' |
+    head -n1)"
+priority="${priority,,}"
+
+# SECURITY_MONITOR_NOTIFY_TIMEOUT (see docker-compose.yml/.env.example): how
+# long, in milliseconds, the toaster stays up for non-critical alerts before
+# it closes itself.
+timeout_ms="${SECURITY_MONITOR_NOTIFY_TIMEOUT:-8000}"
+
+case "$priority" in
+    emergency | alert | critical)
+        # Deliberately not a toaster: critical/emergency alerts stay on
+        # screen until dismissed by hand so they can't be missed while
+        # looking away. expire-time=0 means "never auto-expire" -- most
+        # notification daemons already default to this for urgency=critical,
+        # this just makes it explicit instead of relying on that default.
+        urgency=critical
+        icon=dialog-error
+        expire_time=0
+        ;;
+    error | warning)
+        urgency=normal
+        icon=dialog-warning
+        expire_time="$timeout_ms"
+        ;;
+    *)
+        urgency=low
+        icon=dialog-information
+        expire_time="$timeout_ms"
+        ;;
+esac
+
+title="Falco: claude-code alert"
+[ -n "$priority" ] && title="$title [${priority^^}]"
+
+notify_args=(--urgency="$urgency" --icon="$icon" --expire-time="$expire_time" "$title" "$message")
+
 if [ "$(id -u)" = 0 ] && [ -n "${HOST_UID:-}" ]; then
     setpriv --reuid="$HOST_UID" --regid="$HOST_UID" --clear-groups \
-        notify-send --urgency=critical "Falco: claude-code alert" "$message"
+        notify-send "${notify_args[@]}"
 else
-    notify-send --urgency=critical "Falco: claude-code alert" "$message"
+    notify-send "${notify_args[@]}"
 fi
