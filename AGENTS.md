@@ -219,38 +219,53 @@ touching this code:
   starting at all while still using `--monitor` is
   `SECURITY_MONITOR_STOP_THRESHOLD=0` in `.env`, which `main()` checks
   before adding the profile (see "one deliberate exception" above).
-  - `falco-notify.sh` does the counting (persisted in
-    `falco-stop-signal`, a named volume shared with `stop-watcher`, guarded
-    by `flock` against the race of two alerts firing close together —
-    Falco spawns one `falco-notify.sh` process per alert, `keep_alive:
-    false`). At the threshold it resets the counter and writes a trigger
-    file; it does **not** talk to `docker.sock` itself.
-  - Counting is scoped to alerts whose message text contains the literal
-    substring `claude-code` — every real rule in
+  - `falco-notify.sh` does the counting (persisted in `falco-stop-signal`,
+    a named volume shared with `stop-watcher`), **keyed by container id**
+    — one `critical_count.<container_id>` file per offending container,
+    guarded by a per-container-id `flock` against the race of two alerts
+    for the same container firing close together (Falco spawns one
+    `falco-notify.sh` process per alert, `keep_alive: false`). At the
+    threshold for a given container id it resets that container's counter
+    and writes `trigger.<container_id>`; it does **not** talk to
+    `docker.sock` itself.
+  - Per-container-id keying (not a single global counter) matters because
+    Falco's eBPF view is the whole host kernel, not one Compose project
+    (see intro above) — with more than one workspace running `claude-code`
+    + `--monitor` at once, a single `security-monitor` instance can see
+    CRITICAL alerts from every `claude-code` container on the host.
+    Keying by `container.id` (parsed out of the alert's own
+    `container=%container.id` field, present in every rule's `output:`
+    template) means an unrelated workspace's alerts increment *that other
+    container's* own counter, never this workspace's, and the eventual
+    stop targets exactly the container id that crossed the threshold —
+    not "whichever `claude-code` container happens to be `stop-watcher`'s
+    own Compose sibling" (an earlier version of this design assumed that
+    and got it wrong for the multi-workspace case).
+  - Counting is additionally scoped to alerts whose message text contains
+    the literal substring `claude-code` — every real rule in
     `falco/claude-code-rules.yaml` includes that in its `output:` template
     (the TEST-ONLY pipeline-sanity rule deliberately doesn't, so a manual
     pipeline test never burns down the stop counter). This is intentionally
-    narrower than "any CRITICAL alert Falco produces": `security-monitor`
-    watches the whole host kernel (see intro above), so a bundled
-    default-ruleset CRITICAL alert about an unrelated container/process on
-    the same host would otherwise count too and could stop `claude-code`
-    for something it never did.
+    narrower than "any CRITICAL alert Falco produces": a bundled
+    default-ruleset CRITICAL alert about a completely unrelated,
+    non-`claude-code` container/process on the same host would otherwise
+    count too.
   - `stop-watcher` (see the "one deliberate exception" note above for why
-    this is a separate service, not folded into `security-monitor`) polls
-    the trigger file and, once it appears, resolves its own
-    `com.docker.compose.project` label via `docker.sock` (self-ID read from
-    `/etc/hostname` — Docker's default container hostname when a service
-    doesn't set `hostname:` explicitly, which none here do), then stops
-    whichever container in that same project carries
-    `com.docker.compose.service=claude-code`. Matching on the Compose
-    project/service labels rather than a fixed container name is required
-    because `claude-code`'s container name is dynamic per workspace (see
-    `derive_compose_project_name()` in `bin/cc-container`).
+    this is a separate service, not folded into `security-monitor`) just
+    polls for `trigger.<container_id>` files and stops that exact
+    container id directly via `docker.sock` — no Compose-project/label
+    resolution, no self-ID lookup; the container id comes straight from
+    the alert that fired. Simpler and more correct than the
+    Compose-sibling-guessing approach it replaced.
   - **Not yet confirmed on a live host** (no Docker access at authoring
-    time): the `/etc/hostname`-as-self-ID assumption, and the exact
-    `docker.sock` HTTP API filter syntax `stop-watcher-entrypoint.sh` sends.
-    Same category of open item as the rest of this "Runtime monitoring"
-    section's `VERIFY` notes until exercised for real.
+    time): that `container.id` resolves correctly without a `docker.sock`
+    mount in `security-monitor` (unlike `container.name`/
+    `container.image.repository`, already confirmed to need one). If this
+    assumption is wrong, `container_id` parsing in `falco-notify.sh` comes
+    back empty and the alert is simply skipped for counting purposes (fails
+    closed, logged to stderr) rather than miscounting. Same category of
+    open item as the rest of this "Runtime monitoring" section's `VERIFY`
+    notes until exercised for real.
   - Bypassing `cc-container` with a raw `docker compose --profile
     monitoring --profile auto-stop up -d` always starts `stop-watcher`
     regardless of `SECURITY_MONITOR_STOP_THRESHOLD` — there, the variable

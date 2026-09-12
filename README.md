@@ -486,10 +486,18 @@ change — it can't silence its own alarm. See `.env.example`.
 starts a second, intentionally tiny sidecar, `stop-watcher` (no eBPF, no
 extra Linux capabilities), alongside `security-monitor` automatically —
 it stops `claude-code` once `SECURITY_MONITOR_STOP_THRESHOLD` (default 3)
-CRITICAL/EMERGENCY alerts have fired. It's kept as a separate sidecar
-from `security-monitor` itself because it needs `docker.sock` to stop a
-container, and that access is deliberately not given to the same service
-that already runs Falco (see "Trade-offs" below).
+CRITICAL/EMERGENCY alerts have fired **for that same container**. It's
+kept as a separate sidecar from `security-monitor` itself because it
+needs `docker.sock` to stop a container, and that access is deliberately
+not given to the same service that already runs Falco (see "Trade-offs"
+below).
+
+If you run more than one workspace at once with `--monitor`, this is
+counted per `claude-code` container, not globally — `security-monitor`
+watches the whole host kernel (see intro above), so without this it could
+otherwise stop one workspace's `claude-code` over alerts that actually
+came from a different workspace's. See `AGENTS.md` "Runtime monitoring"
+for the mechanics.
 
 To turn this off (keep alerting, drop the auto-stop), set in `.env`:
 

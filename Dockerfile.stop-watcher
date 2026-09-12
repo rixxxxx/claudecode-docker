@@ -3,14 +3,16 @@
 # Minimal companion to security-monitor (see docker-compose.yml's
 # stop-watcher service and AGENTS.md "Runtime monitoring" for why this is
 # a separate service instead of folding into security-monitor itself).
-# Does exactly one job: watch a trigger file security-monitor writes, then
-# stop the claude-code container via the Docker Engine API over the
-# bind-mounted /var/run/docker.sock. Alpine + curl + jq only -- no docker
-# CLI, no shell beyond busybox ash -- to keep the one docker.sock-bearing
-# surface in this repo as small as it can be.
+# Does exactly one job: watch for trigger files security-monitor writes
+# (one per offending container id, see falco-notify.sh), then stop that
+# container via the Docker Engine API over the bind-mounted
+# /var/run/docker.sock. Alpine + curl only -- no docker CLI, no jq (the
+# trigger filename itself carries the container id, no JSON parsing
+# needed), no shell beyond busybox ash -- to keep the one docker.sock-
+# bearing surface in this repo as small as it can be.
 FROM alpine:3.20
 
-RUN apk add --no-cache curl jq
+RUN apk add --no-cache curl
 
 COPY stop-watcher-entrypoint.sh /usr/local/bin/stop-watcher-entrypoint.sh
 RUN chmod +x /usr/local/bin/stop-watcher-entrypoint.sh

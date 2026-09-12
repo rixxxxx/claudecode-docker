@@ -1,63 +1,55 @@
 #!/bin/sh
 # Entrypoint for stop-watcher (see Dockerfile.stop-watcher and
-# docker-compose.yml's stop-watcher service). Polls TRIGGER_FILE -- written
-# by falco-notify.sh once SECURITY_MONITOR_STOP_THRESHOLD CRITICAL/
-# EMERGENCY alerts attributed to claude-code have fired (see
-# falco-notify.sh and falco/claude-code-rules.yaml) -- and, when it
-# appears, stops the claude-code container belonging to this same Compose
-# project via the Docker Engine API over docker.sock. No docker CLI
-# installed: curl --unix-socket + jq is enough surface for one job.
+# docker-compose.yml's stop-watcher service). Polls for
+# SIGNAL_DIR/trigger.<container_id> files -- written by falco-notify.sh
+# once SECURITY_MONITOR_STOP_THRESHOLD CRITICAL/EMERGENCY alerts for that
+# specific container id have fired (see falco-notify.sh and
+# falco/claude-code-rules.yaml) -- and stops that exact container via the
+# Docker Engine API over docker.sock. No docker CLI installed: curl
+# --unix-socket is enough surface for one job.
 #
-# ASSUMPTION (no Docker access at authoring time to confirm on a live
-# host, same caveat as Dockerfile.security-monitor/docker-compose.yml):
-# /etc/hostname holds this container's own short ID, which is Docker's
-# default hostname for any container that doesn't set `hostname:`
-# explicitly (none of this repo's services do). Used below to
-# self-discover which Compose project this container belongs to, since
-# claude-code's own container name is dynamic per workspace (see
-# bin/cc-container's derive_compose_project_name) -- matching on the
-# com.docker.compose.project label Docker Compose sets on every container
-# in a stack, rather than a fixed name, works regardless of which
-# workspace/project this stop-watcher instance is running in.
+# Deliberately does NOT try to self-discover "my own Compose project's
+# claude-code sibling" (an earlier version of this script did, via
+# /etc/hostname + a com.docker.compose.project label lookup). The
+# container id comes straight from the alert that actually fired (see
+# falco-notify.sh's container_id parsing), which is the container that
+# misbehaved -- not necessarily the one in this same Compose stack, since
+# Falco's eBPF view spans the whole host kernel (see AGENTS.md "Runtime
+# monitoring"). Stopping by that id directly is simpler and more correct
+# than resolving a sibling that might not even be the actual offender in a
+# multi-workspace setup.
 set -eu
 
-TRIGGER_FILE="${TRIGGER_FILE:-/var/run/falco-stop/trigger}"
+SIGNAL_DIR="${SIGNAL_DIR:-/var/run/falco-stop}"
 POLL_INTERVAL="${POLL_INTERVAL:-2}"
 DOCKER_SOCK="/var/run/docker.sock"
-SELF_ID="$(cat /etc/hostname)"
 
-docker_api_get() {
-    curl -s --unix-socket "$DOCKER_SOCK" "http://localhost$1"
-}
-
-docker_api_post() {
-    curl -s --unix-socket "$DOCKER_SOCK" -X POST "http://localhost$1"
-}
-
-echo "stop-watcher: watching $TRIGGER_FILE (self=$SELF_ID, poll=${POLL_INTERVAL}s)"
+echo "stop-watcher: watching $SIGNAL_DIR/trigger.* (poll=${POLL_INTERVAL}s)"
 
 while true; do
-    if [ -f "$TRIGGER_FILE" ]; then
-        project="$(docker_api_get "/containers/$SELF_ID/json" \
-            | jq -r '.Config.Labels["com.docker.compose.project"] // empty')"
+    for trigger in "$SIGNAL_DIR"/trigger.*; do
+        [ -e "$trigger" ] || continue
+        container_id="${trigger##*/trigger.}"
 
-        if [ -z "$project" ]; then
-            echo "stop-watcher: could not resolve own compose project label via docker.sock, skipping this trigger" >&2
-        else
-            filters_enc="$(jq -n --arg p "$project" \
-                '{label: ["com.docker.compose.project=" + $p, "com.docker.compose.service=claude-code"]}' \
-                | tr -d '\n' | jq -sRr @uri)"
-            target="$(docker_api_get "/containers/json?filters=$filters_enc" | jq -r '.[0].Id // empty')"
+        # Defense in depth: only this container.id-shaped value should
+        # ever appear here (falco-notify.sh only writes trigger.<hex id>),
+        # but validate anyway before splicing it into a docker.sock URL --
+        # this is the one docker.sock-bearing surface in the repo, worth
+        # being strict about what it acts on.
+        case "$container_id" in
+            *[!a-f0-9]* | "")
+                echo "stop-watcher: skipping trigger file with unexpected name: $trigger" >&2
+                rm -f "$trigger"
+                continue
+                ;;
+        esac
 
-            if [ -z "$target" ]; then
-                echo "stop-watcher: no running claude-code container found in project '$project', skipping" >&2
-            else
-                echo "stop-watcher: threshold reached -- stopping claude-code container $target (project=$project)"
-                docker_api_post "/containers/$target/stop" >/dev/null
-            fi
+        echo "stop-watcher: threshold reached -- stopping container $container_id"
+        if ! curl -s --unix-socket "$DOCKER_SOCK" -X POST \
+            "http://localhost/containers/$container_id/stop" >/dev/null; then
+            echo "stop-watcher: failed to stop container $container_id" >&2
         fi
-
-        rm -f "$TRIGGER_FILE"
-    fi
+        rm -f "$trigger"
+    done
     sleep "$POLL_INTERVAL"
 done

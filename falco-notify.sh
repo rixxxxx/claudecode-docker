@@ -19,13 +19,6 @@ set -euo pipefail
 
 message="$(cat)"
 
-# SECURITY_MONITOR_NOTIFY (see docker-compose.yml/.env.example): host-side
-# on/off switch for just this popup. Falco keeps sending alerts here either
-# way, so stdout_output (docker logs) is unaffected.
-case "${SECURITY_MONITOR_NOTIFY:-true}" in
-    false | 0 | no | off) exit 0 ;;
-esac
-
 # Falco prefixes every non-json alert line with its priority word (e.g.
 # "2026-09-12T10:00:00.000000000+0000: Warning ..."), so pull that back out
 # to pick urgency/icon and, for the toaster behaviour, whether the popup is
@@ -47,6 +40,27 @@ priority="${priority,,}"
 # unrelated container/process on the same machine would otherwise count
 # too and could stop claude-code for something it never did.
 #
+# Counted PER CONTAINER ID (parsed out of the alert's own "container=..."
+# field -- every rule here includes %container.id in its output), not as
+# one global counter. Necessary for correct behavior with more than one
+# workspace running claude-code + --monitor at once: Falco's eBPF view is
+# the whole host kernel, not scoped to one Compose project, so a single
+# security-monitor instance can see CRITICAL alerts from every claude-code
+# container on the host, not just its own workspace's. Keying by
+# container.id means an unrelated workspace's alert increments that
+# *other* container's own counter, never this workspace's -- and the
+# eventual stop targets exactly the container.id that crossed the
+# threshold (see stop-watcher-entrypoint.sh), not "whatever claude-code
+# container happens to be stop-watcher's own Compose sibling".
+#
+# VERIFY (no Docker access at authoring time): container.id is assumed
+# resolvable from the kernel/cgroup path alone, unlike container.name/
+# container.image.repository which are already confirmed (see AGENTS.md)
+# to need a docker.sock mount and show <NA> without one. If this
+# assumption is wrong, container_id below comes back empty and the alert
+# is skipped for counting purposes (fail closed -- never counts an
+# alert it can't attribute to a specific container).
+#
 # flock serializes the read-increment-write against concurrent
 # falco-notify.sh invocations (Falco spawns one process per alert,
 # keep_alive: false -- two CRITICAL alerts firing close together could
@@ -55,25 +69,42 @@ stop_threshold="${SECURITY_MONITOR_STOP_THRESHOLD:-3}"
 if [[ "$priority" == "critical" || "$priority" == "emergency" ]] \
     && [[ "$message" == *"claude-code"* ]] \
     && [ "$stop_threshold" -gt 0 ] 2>/dev/null; then
-    stop_signal_dir="/var/run/falco-stop"
-    mkdir -p "$stop_signal_dir"
-    # `|| true` at the end: bookkeeping failing here (e.g. an unwritable
-    # volume) must never abort the script before the actual desktop
-    # notification below -- losing the stop-count for one alert is far
-    # better than losing the alert itself.
-    (
-        flock -x 9
-        count=0
-        [ -f "$stop_signal_dir/critical_count" ] && count="$(cat "$stop_signal_dir/critical_count")"
-        count=$((count + 1))
-        if [ "$count" -ge "$stop_threshold" ]; then
-            echo 0 > "$stop_signal_dir/critical_count"
-            date -Iseconds > "$stop_signal_dir/trigger"
-        else
-            echo "$count" > "$stop_signal_dir/critical_count"
-        fi
-    ) 9>"$stop_signal_dir/critical_count.lock" || echo "falco-notify.sh: stop-count bookkeeping failed" >&2
+    container_id="$(printf '%s' "$message" | grep -oE 'container=[a-f0-9]+' | head -n1 | cut -d= -f2)"
+    if [ -z "$container_id" ]; then
+        echo "falco-notify.sh: CRITICAL claude-code alert with no parseable container id, not counting it: $message" >&2
+    else
+        stop_signal_dir="/var/run/falco-stop"
+        mkdir -p "$stop_signal_dir"
+        # `|| echo ... >&2` at the end: bookkeeping failing here (e.g. an
+        # unwritable volume) must never abort the script before the actual
+        # desktop notification below -- losing the stop-count for one
+        # alert is far better than losing the alert itself.
+        (
+            flock -x 9
+            count=0
+            [ -f "$stop_signal_dir/critical_count.$container_id" ] \
+                && count="$(cat "$stop_signal_dir/critical_count.$container_id")"
+            count=$((count + 1))
+            if [ "$count" -ge "$stop_threshold" ]; then
+                echo 0 > "$stop_signal_dir/critical_count.$container_id"
+                : > "$stop_signal_dir/trigger.$container_id"
+            else
+                echo "$count" > "$stop_signal_dir/critical_count.$container_id"
+            fi
+        ) 9>"$stop_signal_dir/critical_count.$container_id.lock" \
+            || echo "falco-notify.sh: stop-count bookkeeping failed for container $container_id" >&2
+    fi
 fi
+
+# SECURITY_MONITOR_NOTIFY (see docker-compose.yml/.env.example): host-side
+# on/off switch for just the desktop popup below -- deliberately checked
+# only now, after the auto-stop counting above, not before it. Falco keeps
+# sending alerts here either way, and auto-stop must keep working the same
+# way regardless of this setting; only stdout_output/the popup are meant
+# to be affected by it.
+case "${SECURITY_MONITOR_NOTIFY:-true}" in
+    false | 0 | no | off) exit 0 ;;
+esac
 
 # SECURITY_MONITOR_NOTIFY_TIMEOUT (see docker-compose.yml/.env.example): how
 # long, in milliseconds, the toaster stays up for non-critical alerts before

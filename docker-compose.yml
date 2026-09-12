@@ -149,12 +149,13 @@ services:
       # e.g. when invoking docker compose directly.
       - /run/user/${HOST_UID:-1000}/bus:/run/user/${HOST_UID:-1000}/bus
       # Shared with stop-watcher (see that service below): falco-notify.sh
-      # writes a counter + trigger file here once
-      # SECURITY_MONITOR_STOP_THRESHOLD CRITICAL/EMERGENCY alerts
-      # attributed to claude-code have fired; stop-watcher polls the same
-      # volume from the other side. Mounted here unconditionally --
-      # harmless if the "auto-stop" profile (stop-watcher) isn't running,
-      # the files just sit unread.
+      # keeps one counter file per offending container id here and writes
+      # a trigger.<container_id> file once SECURITY_MONITOR_STOP_THRESHOLD
+      # CRITICAL/EMERGENCY alerts for that specific container have fired
+      # (see falco-notify.sh); stop-watcher polls the same volume from the
+      # other side and stops exactly that container id. Mounted here
+      # unconditionally -- harmless if the "auto-stop" profile
+      # (stop-watcher) isn't running, the files just sit unread.
       - falco-stop-signal:/var/run/falco-stop
     environment:
       HOST_PROC: /host/proc
@@ -172,13 +173,17 @@ services:
       # falco-notify.sh and .env.example). Critical/Emergency alerts ignore
       # this and stay until dismissed.
       SECURITY_MONITOR_NOTIFY_TIMEOUT: ${SECURITY_MONITOR_NOTIFY_TIMEOUT:-8000}
-      # Number of CRITICAL/EMERGENCY alerts attributed to claude-code (see
+      # Number of CRITICAL/EMERGENCY alerts for the SAME container id (see
       # falco/claude-code-rules.yaml, falco-notify.sh) before signaling
-      # stop-watcher to stop the claude-code container. Set to 0 to disable
+      # stop-watcher to stop that specific container -- counted
+      # per-container, not globally, so one workspace's alerts never count
+      # against a different workspace's claude-code container (Falco's
+      # eBPF view spans the whole host kernel, not just one Compose
+      # project, see AGENTS.md "Runtime monitoring"). Set to 0 to disable
       # (falco-notify.sh treats 0/negative as "never trigger"). Only has an
       # effect when stop-watcher is also running (the "auto-stop" Compose
       # profile, see that service below) -- without it, alerts still count
-      # but nothing acts on the trigger file. Default: 3.
+      # but nothing acts on the trigger files. Default: 3.
       SECURITY_MONITOR_STOP_THRESHOLD: ${SECURITY_MONITOR_STOP_THRESHOLD:-3}
     restart: unless-stopped
 
@@ -191,9 +196,12 @@ services:
   # with cap_add/apparmor:unconfined for eBPF, and adding docker.sock there
   # too would let a single Falco/eBPF compromise pivot into full
   # host-Docker control instead of just this one container's blast radius.
-  # This service does exactly one job: watch for the trigger file
-  # security-monitor writes to the shared falco-stop-signal volume, then
-  # stop the claude-code container in the same Compose project. No
+  # This service does exactly one job: watch for trigger.<container_id>
+  # files security-monitor writes to the shared falco-stop-signal volume,
+  # then stop that exact container id -- not necessarily this same Compose
+  # project's own claude-code sibling, see stop-watcher-entrypoint.sh for
+  # why matching on the alert's own container id is more correct than
+  # assuming it's always "my own sibling" in a multi-workspace setup. No
   # cap_add, no eBPF, no network (network_mode: none -- docker.sock is a
   # filesystem socket, not a network endpoint, so this doesn't need one
   # either).
@@ -207,10 +215,11 @@ services:
   # SECURITY_MONITOR_STOP_THRESHOLD=0 in .env, which cc-container checks
   # before adding this profile.
   #
-  # VERIFY (no Docker access at authoring time, see
-  # stop-watcher-entrypoint.sh): self-discovering this container's own ID
-  # via /etc/hostname, and the exact docker.sock API filter syntax --
-  # written from documentation knowledge, not confirmed on a live host.
+  # VERIFY (no Docker access at authoring time): falco-notify.sh's
+  # assumption that Falco resolves container.id without a docker.sock
+  # mount (unlike container.name/container.image.repository, already
+  # confirmed to need one -- see AGENTS.md) -- written from documentation
+  # knowledge, not confirmed on a live host.
   stop-watcher:
     build:
       context: .
