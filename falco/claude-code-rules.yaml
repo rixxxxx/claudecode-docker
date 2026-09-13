@@ -36,6 +36,14 @@
 #     added/adapted this session, none actually triggered end-to-end yet
 #     (test commands were proposed in conversation but not confirmed
 #     back).
+#   tests/security/test_falco_rules.sh now exists to trigger all six of the
+#   above (the "Unexpected shell" entry only for its true-positive
+#   direction, via `docker compose exec`) and assert the expected alert
+#   line appears -- written but, at authoring time, never actually run on a
+#   real Docker/eBPF host. Run it and update this block with real results
+#   (moved into a dated "Resolved" note above, or into "Suspected dead"
+#   below if a rule's actual behavior diverges) instead of leaving this
+#   list stale once it has been.
 #
 # Open, unresolved question:
 #   - Does a *real* claude-code Bash-tool call (issued by the assistant
@@ -44,10 +52,10 @@
 #     something sit in between (e.g. rtk's PreToolUse hook, see
 #     RTK.md/README "RTK") that would make the exepath-hardened
 #     "Unexpected shell" rule false-positive on every single legitimate
-#     Bash tool call? Never actually tested -- every shell-spawn test so
-#     far went through `docker compose exec` from the host, which has a
-#     different parent chain (containerd-shim) than an assistant-issued
-#     command would.
+#     Bash tool call? Not scriptable (needs a real interactive session, not
+#     `docker compose exec`) -- see AGENTS.md "Runtime monitoring" for the
+#     step-by-step manual verification procedure and where to record the
+#     outcome once run.
 #
 # Suspected dead, not yet fixed:
 #   - "Write attempt to workspace Squid override in claude-code" -- fires

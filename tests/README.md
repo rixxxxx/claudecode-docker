@@ -79,3 +79,15 @@ enforcement) rather than general functionality.
   writing into the read-only `.squid-claudecode-docker` mount inside
   `claude-code` must fail; Squid must reject CONNECT to a non-80/443 port
   even for an otherwise-allowed domain.
+- `test_falco_rules.sh` — starts the stack under the `monitoring` profile
+  (builds `security-monitor` too, heavier than the rest of this tier) and
+  triggers six `falco/claude-code-rules.yaml` rules inside `claude-code`
+  (unexpected shell, npm-install network tool, `/proc/*/environ` reads
+  including the `ps aux` false-positive regression guard, cloud metadata
+  contact, privilege escalation, shell-history tampering), asserting the
+  expected alert line appears in `docker compose logs security-monitor`.
+  Needs a kernel with eBPF support; soft-skips (not a hard failure) if
+  `security-monitor`'s driver fails to initialize. Does not cover the
+  desktop-notification/D-Bus path, nor "Unexpected shell"'s
+  false-positive direction for a *real* assistant-issued Bash tool call —
+  see `AGENTS.md` "Runtime monitoring" for that manual procedure.

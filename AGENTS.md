@@ -358,6 +358,45 @@ touching this code:
     block at the top of `falco/claude-code-rules.yaml` for the current,
     maintained list of what's untested/unresolved per rule — kept there,
     not duplicated here, since it changes faster than this file does.
+  - **Manual procedure for "Unexpected shell"'s open false-positive
+    question** (does a *real* assistant-issued Bash tool call get excluded
+    by the `proc.pexepath` check, or does something — e.g. RTK's
+    PreToolUse hook, see `RTK.md`/README "RTK" — sit in between such that
+    it has a different parent chain and false-positives?). Not scriptable:
+    `tests/security/test_falco_rules.sh` only exercises the true-positive
+    direction via `docker compose exec`, which has a different parent
+    chain (containerd-shim) than an assistant-issued command. To check the
+    false-positive direction by hand:
+    1. `cc-container --monitor` from the repo root.
+    2. In a second host terminal, from the same workspace directory:
+       `docker compose logs -f security-monitor`. Note the current
+       position as a checkpoint.
+    3. In the live Claude Code chat itself (not a raw shell), ask the
+       assistant to run something trivial via its Bash tool, e.g. "Use the
+       Bash tool to run `echo falco-real-bash-tool-check`." This has to go
+       through the assistant's own agentic tool-call path (and any
+       `PreToolUse` hook) — a scripted `docker compose exec` can't reach
+       this code path.
+    4. Watch the log tail for ~15 seconds after the tool call completes.
+       No `Shell spawned in claude-code` line → the exclusion holds for
+       real Bash-tool calls too. The line appears → confirmed
+       false-positive on ordinary Bash-tool use (record as a bug, don't
+       fix inline as part of verification).
+    5. To capture the actual `proc.pexepath`/`proc.pname` value either way
+       (a holding exclusion means the real rule produces no output to read
+       values from): temporarily add a throwaway, non-excluding debug rule
+       to `falco/claude-code-rules.yaml` (never commit it) —
+       `condition: spawned_process and claude_code_container and proc.name
+       in (bash, sh, dash, zsh, ash)`, `output: DEBUG shell spawn
+       pexepath=%proc.pexepath pname=%proc.pname cmdline=%proc.cmdline`,
+       `priority: DEBUG` (visible since `falco.yaml`'s `priority: debug`
+       threshold). `docker compose --profile monitoring up -d
+       --force-recreate security-monitor`, repeat step 3, read the value,
+       remove the debug rule, and `--force-recreate` again to restore the
+       real ruleset.
+    6. Record the dated outcome (and, if it false-positives, the observed
+       `pexepath` value) in `falco/claude-code-rules.yaml`'s OPEN ITEMS
+       header.
   - Known, deliberately unclosed blind spots (limits of syscall-based
     detection, not bugs): bash **builtins** (`history -c`, `unset
     HISTFILE` typed into an already-open shell) never `execve` anything,
@@ -462,12 +501,17 @@ is scoped to that workspace's own dedicated `egress-proxy` instance (see
 ./tests/run-tests.sh --security   # just the security tier on its own
 ```
 
-See `tests/README.md` for the test layout. `tests/security/`'s checks are
-static/network-only (see "Runtime monitoring" above) — nothing in the
-automated suite actually starts `security-monitor` or verifies a Falco
-alert fires; that needs a manual check on a real Docker host with an
-active desktop session (`docker compose --profile monitoring up -d
-security-monitor`, trigger something, watch for the notification).
+See `tests/README.md` for the test layout. Most of `tests/security/` is
+static/network-only, but `test_falco_rules.sh` does start `security-monitor`
+under the `monitoring` profile and verifies six `falco/claude-code-rules.yaml`
+rules fire correctly via `docker compose logs security-monitor` (see
+`tests/README.md` for exactly which). Still not automated: the
+desktop-notification/D-Bus half of the pipeline (needs an active graphical
+host session — `docker compose --profile monitoring up -d security-monitor`,
+trigger something, watch for the notification) and "Unexpected shell"'s
+false-positive direction for a *real* assistant-issued Bash tool call, which
+needs a live interactive session — see "Runtime monitoring" above for that
+manual procedure.
 
 For anything the suite doesn't cover, or to debug a failure by hand, the
 same checks it automates are also useful standalone:

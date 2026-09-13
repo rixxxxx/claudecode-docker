@@ -548,6 +548,14 @@ from the also-included `TEST - Falco pipeline sanity check` rule
 (`touch /tmp/falco-pipeline-test`), which checks that alerts reach you at
 all but is deliberately excluded from the auto-stop count.
 
+For verifying that individual detection rules (not just the pipeline
+itself) actually fire, `tests/security/test_falco_rules.sh` automates this
+for six rules via `./run-tests.sh --security`. The one thing it can't
+cover — whether "Unexpected shell"'s `proc.pexepath` hardening
+false-positives on a *real*, assistant-issued Bash tool call — needs a live
+interactive session; see `AGENTS.md` "Runtime monitoring" for that manual
+procedure.
+
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with
   extra Linux capabilities (`cap_add`, needed for Falco's eBPF driver) —
