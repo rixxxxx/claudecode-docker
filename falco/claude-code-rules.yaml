@@ -26,24 +26,47 @@
 # claude's own internal traffic. Both rules considered confirmed working
 # now, not just mechanically firing.
 #
-# Not yet triggered/confirmed on a live host at all:
-#   - "Unexpected shell in claude-code"'s proc.pexepath hardening
-#     specifically (the credentials/prctl rules are now confirmed live per
-#     above; this one hasn't produced any log line yet either way).
-#   - "Network tool executed during npm install", "Environment variables
-#     read from proc", "Contact cloud metadata service from claude-code",
-#     "Privilege escalation attempt", "Shell history tampering" -- all
-#     added/adapted this session, none actually triggered end-to-end yet
-#     (test commands were proposed in conversation but not confirmed
-#     back).
-#   tests/security/test_falco_rules.sh now exists to trigger all six of the
-#   above (the "Unexpected shell" entry only for its true-positive
-#   direction, via `docker compose exec`) and assert the expected alert
-#   line appears -- written but, at authoring time, never actually run on a
-#   real Docker/eBPF host. Run it and update this block with real results
-#   (moved into a dated "Resolved" note above, or into "Suspected dead"
-#   below if a rule's actual behavior diverges) instead of leaving this
-#   list stale once it has been.
+# Resolved 2026-09-13 (live run of tests/security/test_falco_rules.sh on a
+# real Docker/eBPF host, 7/11 assertions passed): "Unexpected shell in
+# claude-code"'s proc.pexepath hardening (true-positive direction only, via
+# `docker compose exec` -- the false-positive direction for a *real*
+# assistant Bash-tool call is still the separate open question below),
+# "Environment variables read from proc" (including the ps-aux exclusion
+# regression guard staying green), and "Privilege escalation attempt" (all
+# four of sudo/su/pkexec/doas -- none turned out to be installed in the
+# base image, dummy-script stand-ins used for all four, confirming the
+# rule's own desc) all fired exactly as designed. Considered confirmed
+# working now, not just mechanically firing.
+#
+# Confirmed NOT firing as designed 2026-09-13 (same live run) -- root cause
+# not yet diagnosed, do not touch these rules' `condition:` until it is:
+#   - "Network tool executed during npm install in claude-code" -- the
+#     dummy `nc` invoked via an npm postinstall script never produced an
+#     alert. tests/security/test_falco_rules.sh now also captures npm's own
+#     output (previously discarded) and a marker file dropped by the dummy
+#     `nc`, so the next run will show whether npm ever actually invoked it
+#     at all vs. Falco's `npm_package_install_ancestor` ancestor-chain match
+#     missing a real invocation (e.g. npm's own proc.name/proc.pname not
+#     actually being the literal string "npm" on this Falco/npm version).
+#   - "Contact cloud metadata service from claude-code" -- `curl` to
+#     169.254.169.254 produced no alert. tests/security/test_falco_rules.sh
+#     now also checks whether the much broader "Outbound connection ...
+#     bypassing egress-proxy" WARNING rule fired for the same trigger, to
+#     tell apart "the connect syscall wasn't observed by Falco here at all"
+#     from "it was observed, but this rule's specific `fd.sip` match missed
+#     it".
+#   - "Shell history tampering in claude-code" -- neither branch fired:
+#     not `touch ~/.bash_history && rm ~/.bash_history` (unlink/rename
+#     branch), nor `bash -c 'unset HISTFILE'` (spawned_process/cmdline
+#     branch, a new process whose own proc.cmdline literally contains
+#     "HISTFILE"). Both look like they should trivially satisfy the
+#     condition as written -- re-check with a live `docker compose logs -f
+#     security-monitor` tail during a manual repeat of both triggers before
+#     assuming a condition bug (e.g. whether `fd.name` for
+#     unlink/unlinkat actually carries the resolved filename, not just the
+#     containing directory).
+#   Re-run tests/security/test_falco_rules.sh after any fix attempt; update
+#   this block again with the outcome instead of leaving it stale.
 #
 # Open, unresolved question:
 #   - Does a *real* claude-code Bash-tool call (issued by the assistant

@@ -92,12 +92,26 @@ wait_for_log() {
     return 1
 }
 
-assert_alert_seen() { # checkpoint substring [timeout_seconds]
-    local checkpoint="$1" substring="$2" timeout="${3:-15}"
+log_slice_since() { # checkpoint
+    "${COMPOSE[@]}" logs security-monitor 2>&1 | tail -n "+$(($1 + 1))"
+}
+
+# assert_alert_seen <checkpoint> <substring> [timeout_seconds] [extra_diagnostic_text]
+# On failure, dumps the security-monitor log slice since <checkpoint> (and
+# any caller-supplied extra diagnostic text) so a FAIL here can be
+# triaged -- test artifact vs. real rule gap -- without re-running by hand.
+assert_alert_seen() {
+    local checkpoint="$1" substring="$2" timeout="${3:-15}" extra="${4:-}"
     if wait_for_log "$checkpoint" "$substring" "$timeout"; then
         assert_equal "seen" "seen" "alert '$substring' appeared within ${timeout}s"
     else
         assert_equal "seen" "not-seen" "alert '$substring' did not appear within ${timeout}s"
+        echo "    --- diagnostic: security-monitor log since checkpoint ---"
+        log_slice_since "$checkpoint" | sed 's/^/    log> /'
+        if [ -n "$extra" ]; then
+            echo "    --- diagnostic: extra context ---"
+            echo "$extra" | sed 's/^/    /'
+        fi
     fi
 }
 
@@ -142,19 +156,29 @@ test_network_tool_during_npm_install() {
     # the Squid allowlist can't reach an apt mirror to install real ones --
     # the rule only checks proc.name, not real functionality, so a dummy
     # script named "nc" run via an npm postinstall script is sufficient.
+    # The dummy "nc" also drops a marker file, so a FAIL here can
+    # distinguish "postinstall never invoked nc at all" (npm/test-harness
+    # issue) from "nc ran but Falco's ancestor-chain match missed it"
+    # (an actual rule-condition gap, e.g. npm's proc.name not being what
+    # npm_package_install_ancestor expects).
     local checkpoint; checkpoint="$(log_line_count)"
-    "${COMPOSE[@]}" exec -T claude-code sh -c '
+    local npm_out
+    npm_out="$("${COMPOSE[@]}" exec -T claude-code sh -c '
         mkdir -p ~/.local/bin
-        printf "#!/bin/sh\nexit 0\n" > ~/.local/bin/nc
+        printf "#!/bin/sh\ntouch /tmp/falco-nc-invoked\nexit 0\n" > ~/.local/bin/nc
         chmod +x ~/.local/bin/nc
+        rm -f /tmp/falco-nc-invoked
         mkdir -p /tmp/falco-test-npm-pkg
         cd /tmp/falco-test-npm-pkg
         printf "%s" "{\"name\":\"falco-test\",\"version\":\"1.0.0\",\"scripts\":{\"postinstall\":\"nc\"}}" > package.json
-        npm install --no-audit --no-fund >/dev/null 2>&1
-    '
-    assert_alert_seen "$checkpoint" "Network tool executed during npm install in claude-code" 20
+        npm install --no-audit --no-fund 2>&1
+        echo "---marker---"
+        [ -f /tmp/falco-nc-invoked ] && echo "nc WAS invoked (marker file exists)" || echo "nc was NEVER invoked (no marker file) -- npm postinstall did not run it"
+    ' 2>&1)"
+    assert_alert_seen "$checkpoint" "Network tool executed during npm install in claude-code" 20 "npm install output + marker check:
+$npm_out"
     "${COMPOSE[@]}" exec -T claude-code sh -c \
-        'rm -f ~/.local/bin/nc; rm -rf /tmp/falco-test-npm-pkg' >/dev/null 2>&1 || true
+        'rm -f ~/.local/bin/nc /tmp/falco-nc-invoked; rm -rf /tmp/falco-test-npm-pkg' >/dev/null 2>&1 || true
 }
 
 test_env_read_from_proc() {
@@ -175,11 +199,21 @@ test_ps_aux_does_not_false_positive() {
 test_cloud_metadata_contact_attempt() {
     # The connection itself fails (internal: true network, no route out)
     # but the rule watches the connect/sendto attempt, which the kernel
-    # still observes even though it never succeeds.
+    # still observes even though it never succeeds. On failure, also check
+    # whether the much broader "bypassing egress-proxy" WARNING rule (any
+    # non-3128 outbound connect) fired for the same trigger -- if it also
+    # didn't, the connect syscall likely wasn't observed by Falco at all
+    # here (environment/eBPF gap); if it DID fire, the connect was seen but
+    # this rule's own fd.sip match specifically missed it (a condition gap).
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code sh -c \
         'curl --max-time 3 http://169.254.169.254/ >/dev/null 2>&1 || true'
-    assert_alert_seen "$checkpoint" "Outbound connection from claude-code to cloud metadata service" 15
+    local generic_fired="no (generic egress-proxy-bypass rule also did not fire -- connect likely not observed at all)"
+    if log_slice_since "$checkpoint" | grep -qF "Outbound connection attempt from claude-code bypassing egress-proxy"; then
+        generic_fired="yes (generic egress-proxy-bypass rule DID fire -- connect was observed, this rule's fd.sip match missed it specifically)"
+    fi
+    assert_alert_seen "$checkpoint" "Outbound connection from claude-code to cloud metadata service" 15 \
+        "generic 'bypassing egress-proxy' rule fired for the same trigger: $generic_fired"
 }
 
 test_privilege_escalation_attempt() {
