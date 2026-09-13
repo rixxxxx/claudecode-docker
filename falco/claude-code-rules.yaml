@@ -38,33 +38,70 @@
 # rule's own desc) all fired exactly as designed. Considered confirmed
 # working now, not just mechanically firing.
 #
-# Confirmed NOT firing as designed 2026-09-13 (same live run) -- root cause
-# not yet diagnosed, do not touch these rules' `condition:` until it is:
+# Confirmed NOT firing as designed, re-run 2026-09-13 with better
+# diagnostics (tests/security/test_falco_rules.sh now dumps the
+# security-monitor log slice + extra context on failure) -- root cause
+# narrowed but not fully pinned down; do not touch these rules'
+# `condition:` until it is:
 #   - "Network tool executed during npm install in claude-code" -- the
-#     dummy `nc` invoked via an npm postinstall script never produced an
-#     alert. tests/security/test_falco_rules.sh now also captures npm's own
-#     output (previously discarded) and a marker file dropped by the dummy
-#     `nc`, so the next run will show whether npm ever actually invoked it
-#     at all vs. Falco's `npm_package_install_ancestor` ancestor-chain match
-#     missing a real invocation (e.g. npm's own proc.name/proc.pname not
-#     actually being the literal string "npm" on this Falco/npm version).
-#   - "Contact cloud metadata service from claude-code" -- `curl` to
-#     169.254.169.254 produced no alert. tests/security/test_falco_rules.sh
-#     now also checks whether the much broader "Outbound connection ...
-#     bypassing egress-proxy" WARNING rule fired for the same trigger, to
-#     tell apart "the connect syscall wasn't observed by Falco here at all"
-#     from "it was observed, but this rule's specific `fd.sip` match missed
-#     it".
-#   - "Shell history tampering in claude-code" -- neither branch fired:
-#     not `touch ~/.bash_history && rm ~/.bash_history` (unlink/rename
-#     branch), nor `bash -c 'unset HISTFILE'` (spawned_process/cmdline
-#     branch, a new process whose own proc.cmdline literally contains
-#     "HISTFILE"). Both look like they should trivially satisfy the
-#     condition as written -- re-check with a live `docker compose logs -f
-#     security-monitor` tail during a manual repeat of both triggers before
-#     assuming a condition bug (e.g. whether `fd.name` for
-#     unlink/unlinkat actually carries the resolved filename, not just the
-#     containing directory).
+#     diagnostic *proves* this isn't a test artifact: the dummy `nc`'s own
+#     marker file confirmed npm's postinstall genuinely executed it ("nc
+#     WAS invoked"), and the only alert logged for that window was the
+#     unrelated "Shell spawned in claude-code" for the wrapping `sh -c`.
+#     So `npm_package_install_ancestor` (proc.pname / proc.aname[2..5] in
+#     npm/yarn/pnpm/bun) never matched a real npm-spawned child, meaning
+#     npm's own process apparently doesn't report as "npm" (or "node") at
+#     any of those 5 ancestor levels on this image/npm version -- likely
+#     candidate: npm's `process.title = 'npm'` isn't actually reflected in
+#     the kernel `comm` field the way assumed. Next diagnostic step (not
+#     yet done): add a throwaway rule with
+#     `condition: spawned_process and claude_code_container and proc.name
+#     in (network_tool_binaries)`, `output: DEBUG nc ancestor chain
+#     pname=%proc.pname aname1=%proc.aname[1] aname2=%proc.aname[2]
+#     aname3=%proc.aname[3] aname4=%proc.aname[4] aname5=%proc.aname[5]`,
+#     `priority: DEBUG`, re-run the npm trigger, read the real ancestor
+#     names, then decide whether the fix is adding `node` to
+#     `node_package_managers` (broader: catches any node-spawned network
+#     tool, not just npm-specific ones) or something else.
+#   - "Contact cloud metadata service from claude-code" -- the diagnostic
+#     shows the much broader "Outbound connection ... bypassing
+#     egress-proxy" WARNING rule (matches ANY non-3128 outbound connect,
+#     already known to be noisy/reliable) also did NOT fire for the same
+#     `curl http://169.254.169.254/` trigger. That rules out "this rule's
+#     fd.sip match specifically missed it" -- the connect attempt doesn't
+#     appear to have been observed by Falco at all for this trigger. Next
+#     diagnostic step: a throwaway rule
+#     `condition: evt.type=connect and claude_code_container`,
+#     `output: DEBUG any connect dest=%fd.rip:%fd.rport res=%evt.rawres
+#     command=%proc.cmdline`, `priority: DEBUG`, then compare (a) the
+#     169.254.169.254 trigger against (b) a definitely-successful connect
+#     (e.g. curl to an allowed domain) in the same run -- if (b) also
+#     produces nothing, connect events aren't being captured for curl in
+#     this environment at all (broader eBPF/instrumentation question, not
+#     specific to this rule); if (b) fires but (a) doesn't, something about
+#     the unroutable-destination connect path specifically isn't reaching
+#     the probe.
+#   - "Shell history tampering in claude-code" -- neither branch fired on
+#     either run, and both triggers look like they should trivially satisfy
+#     the condition as written (`rm ~/.bash_history` against a literal
+#     resolved path containing "bash_history"; `bash -c 'unset HISTFILE'`
+#     whose own proc.cmdline literally contains "HISTFILE"). Next
+#     diagnostic steps, in order: (1) check `docker compose logs
+#     security-monitor` right after startup for a rule-load
+#     warning/error naming this rule specifically -- rule out a silent
+#     parse/load failure before suspecting the condition logic; (2) a
+#     throwaway rule `condition: spawned_process and claude_code_container
+#     and proc.name=bash`, `output: DEBUG bash cmdline=%proc.cmdline`,
+#     `priority: DEBUG` to confirm proc.cmdline actually contains the
+#     literal substring "HISTFILE" the way assumed for a `docker compose
+#     exec` "bash -c '...'" invocation; (3) a throwaway rule
+#     `condition: evt.type in (unlink, unlinkat, rename, renameat,
+#     renameat2) and claude_code_container`, `output: DEBUG unlink/rename
+#     fd.name=%fd.name evt.type=%evt.type command=%proc.cmdline`,
+#     `priority: DEBUG` to see what Falco actually populates for `fd.name`
+#     on this event type (see the already-known-dead Squid-override rule
+#     above for a precedent of an `fd.name`/event-type assumption turning
+#     out wrong).
 #   Re-run tests/security/test_falco_rules.sh after any fix attempt; update
 #   this block again with the outcome instead of leaving it stale.
 #
