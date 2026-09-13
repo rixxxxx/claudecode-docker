@@ -358,6 +358,19 @@ touching this code:
     block at the top of `falco/claude-code-rules.yaml` for the current,
     maintained list of what's untested/unresolved per rule — kept there,
     not duplicated here, since it changes faster than this file does.
+  - **Falco reports only ONE alert per matching event here, not all
+    matching rules** — confirmed live 2026-09-13 (0.39.2) via a controlled
+    reordering experiment: whichever rule matches an event FIRST in load
+    order (bundled `falco_rules.yaml` first, then `claude-code-rules.yaml`
+    top-to-bottom) wins; any other rule whose condition is also true for
+    that same event stays completely silent, regardless of its own
+    priority or specificity. Discovered because "Shell history disabling
+    command" was being silently swallowed by "Unexpected shell" for every
+    matching event until moved earlier in the file. See the "OPEN ITEMS"
+    block for the full writeup and the check already done for other
+    overlapping-condition pairs in this file — matters for any new rule
+    added whose condition could also satisfy an earlier rule's on the same
+    `evt.type`.
   - **Manual procedure for "Unexpected shell"'s open false-positive
     question** (does a *real* assistant-issued Bash tool call get excluded
     by the `proc.pexepath` check, or does something — e.g. RTK's
