@@ -462,6 +462,22 @@ test_credentials_read_via_proc_self_root_fires() {
     "${COMPOSE[@]}" exec -T claude-code rm -f ~/.claude/.credentials.json >/dev/null 2>&1 || true
 }
 
+test_process_memory_access_fires() {
+    # New 2026-09-14: closes the highest-priority gap from OPEN ITEMS
+    # "Candidate future rules" -- ptrace/process_vm_readv/process_vm_writev
+    # bypass every file-based credential rule above, since they read the
+    # target process's decrypted memory directly instead of opening the
+    # credentials file. PTRACE_ATTACH=16 against PID 1 (harmless target --
+    # expected to fail with EPERM, irrelevant; the syscall attempt itself
+    # is what the rule watches for, confirmed live via a throwaway DEBUG
+    # rule during design that Falco captures the event regardless of
+    # whether ptrace itself succeeds).
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes; ctypes.CDLL('libc.so.6').ptrace(16, 1, 0, 0)" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Process memory access attempt in claude-code" 15
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -479,5 +495,6 @@ run_test test_squid_override_read_does_not_false_positive
 run_test test_squid_override_write_via_proc_self_root_fires
 run_test test_credentials_read_fires
 run_test test_credentials_read_via_proc_self_root_fires
+run_test test_process_memory_access_fires
 
 print_summary

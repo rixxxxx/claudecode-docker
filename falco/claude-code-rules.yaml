@@ -197,11 +197,13 @@
 # `security_opt: no-new-privileges` in docker-compose.yml, so it retains
 # Docker's full default capability set (including CAP_NET_RAW) -- makes
 # the raw-socket item below concretely exploitable today, not theoretical.
-#   - Highest priority, undermines this session's own credentials-file
-#     hardening directly: ptrace / process_vm_readv / process_vm_writev --
-#     an attacker doesn't need to open ~/.claude/.credentials.json (the
-#     "Non-Claude read" rule above) if they can read the live claude-code
-#     process's memory instead. Completely unmonitored.
+#   - DONE 2026-09-14: ptrace / process_vm_readv / process_vm_writev -- see
+#     "Process memory access attempt in claude-code" rule below and its
+#     own comment for the live-verification writeup (ptrace confirmed
+#     captured on this driver; process_vm_readv/writev assumed but not
+#     separately triggered; no dedicated false-positive baseline against a
+#     real extended claude-code session was done either -- worth
+#     revisiting if this ever false-positives in practice).
 #   - socket(AF_PACKET, ...) / socket(AF_INET, SOCK_RAW, ...) -- claude-code
 #     keeps CAP_NET_RAW (Docker default, never dropped, confirmed above).
 #     Raw sockets bypass egress-proxy's domain allowlist entirely at
@@ -937,4 +939,40 @@
     (command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, test]
+
+# Added 2026-09-14 (see OPEN ITEMS "Candidate future rules" -- highest
+# priority of that list): an attacker doesn't need to open
+# ~/.claude/.credentials.json (the "Non-Claude read" rule above) if they
+# can read the live claude-code process's memory directly instead --
+# completely bypasses every file-based rule in this file. Confirmed live
+# via a throwaway DEBUG rule that Falco's modern_ebpf driver on this
+# version (0.39.2) does capture ptrace (only the exit event, dir=<, no
+# paired enter event observed -- res/addr/data present in evt.args, no
+# target-pid field). process_vm_readv/process_vm_writev assumed captured
+# the same way (same driver, same event-table mechanism) but not
+# separately confirmed with their own live trigger. Excluded on the same
+# claude_code_binary_exepath/node_binary_exepath macros as the other
+# credential-adjacent rules -- covers a legitimate Bun/node process
+# ptracing itself or a child (e.g. crash-reporting/signal-handling), which
+# is the only plausible legitimate use inside this container; not verified
+# against a real, extended claude-code session (no live baseline capture
+# of Bun's own behavior was done for this rule specifically) -- if it
+# false-positives on real usage, that's the first thing to check.
+- rule: Process memory access attempt in claude-code
+  desc: >
+    A process inside claude-code attempted to read or write another
+    process's memory directly (ptrace/process_vm_readv/process_vm_writev)
+    -- bypasses every file-based credential-access rule in this file,
+    since the target's decrypted in-memory state is read without ever
+    opening the credentials file itself.
+  condition: >
+    claude_code_container
+    and evt.dir = <
+    and evt.type in (ptrace, process_vm_readv, process_vm_writev)
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Process memory access attempt in claude-code
+    (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, credentials, defense-evasion]
 
