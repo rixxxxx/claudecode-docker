@@ -597,6 +597,18 @@
 - list: network_tool_binaries
   items: [nc, ncat, netcat, nmap, dig, tcpdump, tshark, ngrep, telnet, mitmproxy, socat, zmap]
 
+# Defense-in-depth 2026-09-14, not the primary defense anymore:
+# NPM_CONFIG_IGNORE_SCRIPTS=true is now the image default (Dockerfile) --
+# npm lifecycle scripts (preinstall/install/postinstall/prepare, the
+# delivery mechanism this rule watches for) don't run at all for any
+# package by default, preventing the attack pattern structurally instead
+# of only detecting it after the fact. This rule still matters for a
+# workspace that explicitly opted back in via .env
+# (NPM_CONFIG_IGNORE_SCRIPTS=false, see .env.example) -- see
+# tests/security/test_falco_rules.sh's
+# test_npm_lifecycle_scripts_disabled_by_default (confirms the preventive
+# default) and test_network_tool_during_npm_install (confirms this rule
+# still fires when someone disables that default).
 - rule: Network tool executed during npm install in claude-code
   desc: >
     A network tool was launched with an npm/yarn/pnpm/bun package-manager

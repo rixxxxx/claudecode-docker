@@ -44,7 +44,7 @@ cleanup() {
     "${COMPOSE[@]}" exec -T claude-code sh -c '
         rm -f ~/.local/bin/nc ~/.local/bin/sudo ~/.local/bin/su ~/.local/bin/pkexec ~/.local/bin/doas
         rm -f ~/.bash_history /tmp/node
-        rm -rf /tmp/falco-test-npm-pkg /tmp/falco-pipeline-test
+        rm -rf /tmp/falco-test-npm-pkg /tmp/falco-test-npm-pkg-2 /tmp/falco-pipeline-test
     ' >/dev/null 2>&1 || true
     docker_test_cleanup "$PROJECT"
     "${COMPOSE[@]}" --profile monitoring down -v --remove-orphans >/dev/null 2>&1 || true
@@ -198,6 +198,14 @@ test_network_tool_during_npm_install() {
     # issue) from "nc ran but Falco's ancestor-chain match missed it"
     # (an actual rule-condition gap, e.g. npm's proc.name not being what
     # npm_package_install_ancestor expects).
+    #
+    # NPM_CONFIG_IGNORE_SCRIPTS=false override: since NPM_CONFIG_IGNORE_SCRIPTS=true
+    # is now the image default (see Dockerfile), lifecycle scripts don't run
+    # at all by default -- this test now specifically simulates "someone
+    # disabled the preventive default for this workspace", confirming Falco
+    # still independently catches the attack pattern as defense-in-depth.
+    # See test_npm_lifecycle_scripts_disabled_by_default for the default
+    # (no override) case.
     local checkpoint; checkpoint="$(log_line_count)"
     local npm_out
     npm_out="$("${COMPOSE[@]}" exec -T claude-code sh -c '
@@ -208,7 +216,7 @@ test_network_tool_during_npm_install() {
         mkdir -p /tmp/falco-test-npm-pkg
         cd /tmp/falco-test-npm-pkg
         printf "%s" "{\"name\":\"falco-test\",\"version\":\"1.0.0\",\"scripts\":{\"postinstall\":\"nc\"}}" > package.json
-        npm install --no-audit --no-fund 2>&1
+        NPM_CONFIG_IGNORE_SCRIPTS=false npm install --no-audit --no-fund 2>&1
         echo "---marker---"
         [ -f /tmp/falco-nc-invoked ] && echo "nc WAS invoked (marker file exists)" || echo "nc was NEVER invoked (no marker file) -- npm postinstall did not run it"
     ' 2>&1)"
@@ -239,6 +247,36 @@ $npm_out"
 
     "${COMPOSE[@]}" exec -T claude-code sh -c \
         'rm -f ~/.local/bin/nc /tmp/falco-nc-invoked; rm -rf /tmp/falco-test-npm-pkg' >/dev/null 2>&1 || true
+}
+
+test_npm_lifecycle_scripts_disabled_by_default() {
+    # The actual new preventive behavior (see Dockerfile's
+    # NPM_CONFIG_IGNORE_SCRIPTS=true): without any override, npm lifecycle
+    # scripts must not run at all -- same postinstall trigger as
+    # test_network_tool_during_npm_install, but NO override this time. The
+    # marker file must NOT appear (nc never invoked) and Falco must have
+    # nothing to report (nothing ran to report on).
+    local checkpoint; checkpoint="$(log_line_count)"
+    local npm_out
+    npm_out="$("${COMPOSE[@]}" exec -T claude-code sh -c '
+        mkdir -p ~/.local/bin
+        printf "#!/bin/sh\ntouch /tmp/falco-nc-invoked\nexit 0\n" > ~/.local/bin/nc
+        chmod +x ~/.local/bin/nc
+        rm -f /tmp/falco-nc-invoked
+        mkdir -p /tmp/falco-test-npm-pkg-2
+        cd /tmp/falco-test-npm-pkg-2
+        printf "%s" "{\"name\":\"falco-test-2\",\"version\":\"1.0.0\",\"scripts\":{\"postinstall\":\"nc\"}}" > package.json
+        npm config get ignore-scripts
+        npm install --no-audit --no-fund 2>&1
+        echo "---marker---"
+        [ -f /tmp/falco-nc-invoked ] && echo "nc WAS invoked (marker file exists) -- ignore-scripts default did NOT prevent it" || echo "nc was NEVER invoked (no marker file) -- ignore-scripts default worked"
+    ' 2>&1)"
+    assert_contains "$npm_out" "nc was NEVER invoked" \
+        "npm lifecycle script did not run by default (NPM_CONFIG_IGNORE_SCRIPTS=true): $npm_out"
+    assert_alert_absent "$checkpoint" "Network tool executed during npm install in claude-code" 5
+
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'rm -f ~/.local/bin/nc /tmp/falco-nc-invoked; rm -rf /tmp/falco-test-npm-pkg-2' >/dev/null 2>&1 || true
 }
 
 test_env_read_from_proc() {
@@ -381,6 +419,7 @@ run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
 run_test test_network_tool_during_npm_install
+run_test test_npm_lifecycle_scripts_disabled_by_default
 run_test test_env_read_from_proc
 run_test test_ps_aux_does_not_false_positive
 run_test test_cloud_metadata_contact_attempt

@@ -23,7 +23,14 @@ iptables inside the container itself.
   workspace (`docker compose down`); pressing Enter leaves them running.
 - `claude-code`: runs as a non-root user (UID 1000) and has no direct
   route to the internet — the route simply doesn't exist at the Docker
-  network level.
+  network level. `npm install` inside it never runs package lifecycle
+  scripts (`preinstall`/`install`/`postinstall`/`prepare`) by default —
+  preventive against the classic npm supply-chain attack pattern
+  (malicious `postinstall` scripts), not just Falco's after-the-fact
+  detection of it (see "Runtime monitoring" below). Breaks packages that
+  need those scripts for functionality (native binaries, `puppeteer`'s
+  Chromium download, `husky`) — uncomment `NPM_CONFIG_IGNORE_SCRIPTS=false`
+  in `.env` (see `.env.example`) to allow them again for a given workspace.
 - `/workspace` inside the container is bind-mounted from the host
   directory `cc-container` was invoked from (via `HOST_WORKSPACE`, set to
   `$(pwd)`) — run it from the project you want Claude Code to work on,
@@ -466,6 +473,10 @@ own bundled default ruleset):
 - A network tool (`nc`, `socat`, `tcpdump`, ...) launched with an
   npm/yarn/pnpm/bun install somewhere in its ancestry — the classic
   npm supply-chain attack pattern (malicious `postinstall` scripts).
+  Defense-in-depth only as of 2026-09-14: the primary defense is
+  `NPM_CONFIG_IGNORE_SCRIPTS=true` (Dockerfile default, see `.env.example`
+  to opt out per workspace) — npm lifecycle scripts don't run at all by
+  default, so there's usually nothing here for this rule to catch.
 - A process reading another process's environment variables via
   `/proc/*/environ` (`ANTHROPIC_API_KEY` and other secrets are passed in
   as container environment variables).

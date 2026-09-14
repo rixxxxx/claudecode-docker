@@ -322,7 +322,12 @@ touching this code:
   (`sudo`/`su`/`pkexec`/`doas`), shell-history tampering, a network tool
   executed with an npm/yarn/pnpm/bun ancestor (adapted from
   [falcosecurity/rules](https://github.com/falcosecurity/rules)'
-  `falco-sandbox_rules.yaml`), reads of `/proc/*/environ` (adapted from the
+  `falco-sandbox_rules.yaml` -- defense-in-depth only as of 2026-09-14,
+  since `NPM_CONFIG_IGNORE_SCRIPTS=true` (Dockerfile default) now prevents
+  the underlying npm-lifecycle-script attack pattern structurally instead
+  of just detecting it; see the rule's own comment in
+  `falco/claude-code-rules.yaml` and `.env.example` for the per-workspace
+  opt-out), reads of `/proc/*/environ` (adapted from the
   same repo's `falco-incubating_rules.yaml`), contact with the cloud
   metadata service (`169.254.169.254`, same source), and a process
   impersonating a trusted name (`claude`/`node`/`Bun`) via

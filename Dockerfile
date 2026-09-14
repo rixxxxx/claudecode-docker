@@ -140,6 +140,19 @@ RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
     --mount=type=secret,id=no_proxy,env=NO_PROXY \
     npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# Preventive default against npm supply-chain attacks (most postinstall-
+# delivered payloads -- crypto miners, credential theft, backdoors -- never
+# run at all instead of only being caught after the fact by Falco's
+# "Network tool executed during npm install" rule, which becomes
+# defense-in-depth rather than the primary defense). Placed after this
+# file's own npm install above so the build itself is unaffected either
+# way. Overridable per workspace via .env (NPM_CONFIG_IGNORE_SCRIPTS=false)
+# -- env_file in docker-compose.yml passes .env straight through, no
+# compose change needed. Breaks packages that need postinstall for
+# functionality (native binaries, puppeteer's Chromium download, husky) --
+# silently, not as an install-time error -- hence the opt-out.
+ENV NPM_CONFIG_IGNORE_SCRIPTS=true
+
 # Install RTK (compresses dev-command output before it reaches the LLM
 # context window) and register its Claude Code PreToolUse hook globally.
 # --auto-patch is RTK's non-interactive install mode (see rtk-ai/rtk docs).
