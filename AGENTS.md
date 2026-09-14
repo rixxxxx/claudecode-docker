@@ -368,11 +368,14 @@ touching this code:
     a real, assistant-issued Bash tool call is correctly excluded (no
     false positive) — see `falco/claude-code-rules.yaml`'s OPEN ITEMS for
     the dated writeup. The `prctl` impersonation rule (also added
-    2026-09-11) is still **not yet confirmed by triggering it on a live
-    host** — verified against Falco/libs source only
-    (`sinsp_filtercheck_thread.cpp`, `driver/event_table.c`,
-    `driver/flags_table.c`), and not covered by any test in
-    `tests/security/test_falco_rules.sh` either. See the "OPEN ITEMS"
+    2026-09-11) is now confirmed live too, as of 2026-09-14: `docker
+    compose exec claude-code python3 -c "import ctypes;
+    ctypes.CDLL('libc.so.6').prctl(15, b'Bun', 0, 0, 0)"` (PR_SET_NAME=15,
+    a process that isn't the real claude.exe renaming itself to "Bun")
+    fired the CRITICAL alert as designed. Now also covered by an
+    automated test (`test_prctl_impersonation_fires` in
+    `tests/security/test_falco_rules.sh`) -- every rule in this file has
+    at least one live-fired confirmation as of 2026-09-14. See the "OPEN ITEMS"
     block at the top of `falco/claude-code-rules.yaml` for the current,
     maintained list of what's untested/unresolved per rule — kept there,
     not duplicated here, since it changes faster than this file does.

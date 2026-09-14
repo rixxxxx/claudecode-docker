@@ -592,8 +592,15 @@
 # (driver/event_table.c: PPME_SYSCALL_PRCTL_X has args res/option/
 # arg2_str/arg2_int; driver/flags_table.c: prctl_options maps "PR_SET_NAME"
 # -> PPM_PR_SET_NAME; sinsp_filtercheck_thread.cpp: proc.exepath resolves
-# the actual executable backing the process) -- not yet confirmed by
-# actually triggering this rule on a live host.
+# the actual executable backing the process). Confirmed live 2026-09-14:
+# `docker compose exec claude-code python3 -c "import ctypes;
+# ctypes.CDLL('libc.so.6').prctl(15, b'Bun', 0, 0, 0)"` (PR_SET_NAME=15)
+# fired the rule as designed --
+# `exe=/usr/bin/python3.14 new_name=Bun`, correctly flagged since
+# python3's exepath isn't the real claude.exe. Now covered by
+# tests/security/test_falco_rules.sh's test_prctl_impersonation_fires --
+# every rule in this file has at least one live-fired confirmation as of
+# 2026-09-14.
 #
 # Originally excluded "Bun" from this rule's targets entirely: claude-code's
 # own worker threads rename themselves to "Bun Pool N" constantly and

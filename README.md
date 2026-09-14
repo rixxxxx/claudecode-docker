@@ -559,9 +559,12 @@ false-positives on a *real*, assistant-issued Bash tool call needed a live
 interactive session to check (not scriptable) — confirmed live 2026-09-14,
 no false positive; see `AGENTS.md` "Runtime monitoring" for that manual
 procedure if it ever needs re-checking (e.g. after a Claude Code or RTK
-upgrade changes the tool-call process chain). The one rule with no live
-confirmation or test coverage at all right now is "Process impersonating
-trusted name via prctl" (verified against Falco/libs source only).
+upgrade changes the tool-call process chain). "Process impersonating
+trusted name via prctl" is confirmed live as of 2026-09-14 too (a
+non-claude.exe process renaming itself to "Bun" via `prctl`), now covered
+by an automated test as well (`test_prctl_impersonation_fires`) — every
+rule in `falco/claude-code-rules.yaml` has at least one live-fired
+confirmation as of 2026-09-14.
 
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with

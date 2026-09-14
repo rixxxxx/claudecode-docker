@@ -265,6 +265,20 @@ test_privilege_escalation_attempt() {
     done
 }
 
+test_prctl_impersonation_fires() {
+    # Confirmed live 2026-09-14 (manually first, see
+    # falco/claude-code-rules.yaml's own comment on this rule): a process
+    # that is NOT claude-code's own real executable renaming itself to
+    # "Bun"/"claude"/"node" via prctl(PR_SET_NAME) is exactly what this
+    # rule is designed to catch. python3 (not claude.exe) is a convenient,
+    # always-available way to trigger this without a throwaway C program
+    # -- PR_SET_NAME is prctl option 15.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes; ctypes.CDLL('libc.so.6').prctl(15, b'Bun', 0, 0, 0)" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Process impersonating trusted name via prctl in claude-code" 15
+}
+
 test_history_file_deletion() {
     # Was "Shell history tampering in claude-code" (one combined rule)
     # until 2026-09-13, split into two rules after the combined one was
@@ -328,6 +342,7 @@ run_test test_env_read_from_proc
 run_test test_ps_aux_does_not_false_positive
 run_test test_cloud_metadata_contact_attempt
 run_test test_privilege_escalation_attempt
+run_test test_prctl_impersonation_fires
 run_test test_history_file_deletion
 run_test test_history_env_tampering_spawned_process
 run_test test_squid_override_write_attempt_fires
