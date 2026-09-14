@@ -223,7 +223,9 @@
 # check the parent's exe-layer (no such field exists) -- this can't be
 # spoofed by renaming: an attacker can make their process's comm say
 # "Bun", but not make the kernel report a different file as their actual
-# executable. Not yet confirmed by triggering this rule on a live host.
+# executable. Confirmed both directions on a live host 2026-09-14 (both
+# the docker-compose-exec true positive and the real-Bash-tool-call
+# false-positive question) -- see OPEN ITEMS above for the dated writeup.
 #
 # Centralized 2026-09-14 (see "Maintenance trap" above): the claude.exe path
 # used to be duplicated as a literal in three rules' conditions. Two macros

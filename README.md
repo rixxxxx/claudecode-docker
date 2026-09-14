@@ -550,11 +550,18 @@ all but is deliberately excluded from the auto-stop count.
 
 For verifying that individual detection rules (not just the pipeline
 itself) actually fire, `tests/security/test_falco_rules.sh` automates this
-for six rules via `./run-tests.sh --security`. The one thing it can't
-cover — whether "Unexpected shell"'s `proc.pexepath` hardening
-false-positives on a *real*, assistant-issued Bash tool call — needs a live
-interactive session; see `AGENTS.md` "Runtime monitoring" for that manual
-procedure.
+for most rules in `falco/claude-code-rules.yaml` (11 checks as of
+2026-09-14 — see that file for the current, maintained list) via
+`./run-tests.sh --security`, and `tests/security/test_auto_stop_pipeline.sh`
+covers the auto-stop path itself end-to-end, including the cross-project
+safety boundary. Whether "Unexpected shell"'s `proc.pexepath` hardening
+false-positives on a *real*, assistant-issued Bash tool call needed a live
+interactive session to check (not scriptable) — confirmed live 2026-09-14,
+no false positive; see `AGENTS.md` "Runtime monitoring" for that manual
+procedure if it ever needs re-checking (e.g. after a Claude Code or RTK
+upgrade changes the tool-call process chain). The one rule with no live
+confirmation or test coverage at all right now is "Process impersonating
+trusted name via prctl" (verified against Falco/libs source only).
 
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with

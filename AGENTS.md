@@ -138,11 +138,11 @@ code:
 - **`.env` and NTLM `DOMAIN\username`**: confirmed broken by the same test
   run — `bin/cc-container` loads `.env` via bash `source` (see above), and
   bash strips an unescaped backslash in an unquoted assignment
-  (`DOMAIN\username` becomes `DOMAINusername`). `.env.example`'s claim that
-  "no URL-encoding needed" for the backslash is wrong for this loading
-  mechanism; a literal single backslash must be written as `\\` in `.env`
-  to survive `source`. Not yet fixed in `.env.example`/README — needs a
-  decision on whether to fix the docs or change how `.env` is loaded.
+  (`DOMAIN\username` becomes `DOMAINusername`). Fixed via the docs route:
+  `.env.example`'s comment for this setting now calls out the
+  doubled-backslash requirement directly (`DOMAIN\\username`) right after
+  the "no URL-encoding needed" note, instead of leaving that note
+  misleading on its own.
 
 ## Runtime monitoring
 
@@ -283,17 +283,19 @@ touching this code:
     if that lookup ever fails, the container refuses to start at all
     (fail closed — `restart: unless-stopped` keeps retrying) rather than
     run without being sure of its own scope.
-  - **Not yet confirmed on a live host** (no Docker access at authoring
-    time): that `container.id` resolves correctly without a `docker.sock`
-    mount in `security-monitor` (unlike `container.name`/
-    `container.image.repository`, already confirmed to need one) — if
-    wrong, `container_id` parsing in `falco-notify.sh` comes back empty
-    and the alert is simply skipped for counting purposes (fails closed,
-    logged to stderr) rather than miscounting; and the `/etc/hostname`-as-
-    self-id assumption in `stop-watcher-entrypoint.sh`, now load-bearing
-    for the same-instance check too, not just for picking the right
-    target. Same category of open item as the rest of this "Runtime
-    monitoring" section's `VERIFY` notes until exercised for real.
+  - **Confirmed live 2026-09-14** (`tests/security/test_auto_stop_pipeline.sh`):
+    `container.id` does resolve correctly without a `docker.sock` mount in
+    `security-monitor` (unlike `container.name`/`container.image.repository`,
+    confirmed to need one), so `container_id` parsing in `falco-notify.sh`
+    never hit its fail-closed empty-string branch in testing; and the
+    `/etc/hostname`-as-self-id assumption in `stop-watcher-entrypoint.sh`
+    resolves correctly too. Both the happy path (own container genuinely
+    stopped after threshold) and the same-instance safety check (a second,
+    unrelated throwaway project's `claude-code` container was made to
+    alert; this instance's `security-monitor` observed it host-wide,
+    wrote a trigger naming it, and `stop-watcher` correctly refused —
+    confirmed the foreign container was still running afterward) were
+    exercised live, not just the mechanically-fires-in-isolation case.
   - Bypassing `cc-container` with a raw `docker compose --profile
     monitoring --profile auto-stop up -d` always starts `stop-watcher`
     regardless of `SECURITY_MONITOR_STOP_THRESHOLD` — there, the variable
@@ -325,12 +327,19 @@ touching this code:
   metadata service (`169.254.169.254`, same source), and a process
   impersonating a trusted name (`claude`/`node`/`Bun`) via
   `prctl(PR_SET_NAME)`.
-  - The Squid-override rule is suspected dead in practice: it fires on
-    `open_write`, but the write attempt fails at the read-only mount
-    itself (`EROFS`) before a file descriptor exists, and `open_write`
-    likely requires a successful open. Confirmed no alert on a real host
-    for a failing `touch` against that path; not yet fixed (would need a
-    condition that doesn't depend on `open_write`'s success requirement).
+  - The Squid-override rule was dead in practice until fixed 2026-09-14:
+    it used to fire on `open_write`, but the write attempt fails at the
+    read-only mount itself (`EROFS`) before a file descriptor exists, and
+    `open_write` requires `fd.num>=0` (a successful open) — confirmed via
+    a throwaway DEBUG rule on a live host, which also disproved the
+    initial theory that `fd.name` was the problem (it was correctly
+    populated even on the failing exit event). Rewritten to match directly
+    on the open-family syscall's exit event, write-intent flags, and
+    `fd.name`, none of which require a successful fd. Verified live via
+    `tests/security/test_falco_rules.sh`'s
+    `test_squid_override_write_attempt_fires` (plus a read-regression
+    guard so the write-intent-flags restriction doesn't false-positive on
+    normal reads of this deliberately-readable path).
   - Several rules exclude `proc.name`/`proc.pname in (claude, node)` (or
     the real runtime name, see below) as "this is claude-code itself, not
     an attacker" — this is spoofable, since `proc.name` is just the
@@ -339,22 +348,31 @@ touching this code:
     `proc.exepath`/`proc.pexepath` instead (the kernel-resolved file
     actually backing the process, not spoofable by renaming): the real
     claude-code CLI is a **Bun-compiled single-file ELF executable** at
-    `/home/claudecode/.npm-global/bin/claude` (confirmed on a real host —
-    `file`/hexdump showed an ELF header; no separate `bun` binary exists
-    anywhere on the image), and its actual process/thread name is `Bun`
-    (and `Bun Pool N` for worker threads), not literally `claude` or
-    `node`. An earlier attempt to harden this via
-    `proc.is_exe_upper_layer=false` (same field the bundled "Executing
-    binary not part of base image" rule uses) false-positived: claude-code
-    itself turned out to be upper-layer on a real host (likely npm
-    self-updated at container runtime rather than baked into the image at
-    build time), so that field can't distinguish "legitimate but
-    runtime-updated" from "foreign binary". `proc.exepath` doesn't have
-    that problem. `proc.pexepath` for the "Unexpected shell" rule and the
-    `prctl` impersonation rule (both added 2026-09-11) are **not yet
-    confirmed by triggering them on a live host** — verified against
-    Falco/libs source only (`sinsp_filtercheck_thread.cpp`,
-    `driver/event_table.c`, `driver/flags_table.c`). See the "OPEN ITEMS"
+    `/home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`
+    (confirmed on a real host — `file`/hexdump showed an ELF header; no
+    separate `bun` binary exists anywhere on the image; this is the
+    canonical resolved path, not the `/home/claudecode/.npm-global/bin/claude`
+    npm shim/symlink that an earlier version of this doc and these rules
+    both wrongly used), and its actual process/thread name is `Bun` (and
+    `Bun Pool N` for worker threads), not literally `claude` or `node`. An
+    earlier attempt to harden this via `proc.is_exe_upper_layer=false`
+    (same field the bundled "Executing binary not part of base image" rule
+    uses) false-positived: claude-code itself turned out to be
+    upper-layer on a real host (likely npm self-updated at container
+    runtime rather than baked into the image at build time), so that
+    field can't distinguish "legitimate but runtime-updated" from
+    "foreign binary". `proc.exepath` doesn't have that problem.
+    `proc.pexepath` for the "Unexpected shell" rule (added 2026-09-11) is
+    now confirmed both directions on a live host as of 2026-09-14: a
+    `docker compose exec` shell is correctly detected (true positive), and
+    a real, assistant-issued Bash tool call is correctly excluded (no
+    false positive) — see `falco/claude-code-rules.yaml`'s OPEN ITEMS for
+    the dated writeup. The `prctl` impersonation rule (also added
+    2026-09-11) is still **not yet confirmed by triggering it on a live
+    host** — verified against Falco/libs source only
+    (`sinsp_filtercheck_thread.cpp`, `driver/event_table.c`,
+    `driver/flags_table.c`), and not covered by any test in
+    `tests/security/test_falco_rules.sh` either. See the "OPEN ITEMS"
     block at the top of `falco/claude-code-rules.yaml` for the current,
     maintained list of what's untested/unresolved per rule — kept there,
     not duplicated here, since it changes faster than this file does.
