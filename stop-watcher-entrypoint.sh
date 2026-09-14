@@ -22,12 +22,15 @@
 # on any trigger whose target container isn't in that same project (and
 # isn't the claude-code service specifically).
 #
-# VERIFY (no Docker access at authoring time): /etc/hostname holding this
-# container's own id, and container.id (used in the trigger filename,
-# parsed by falco-notify.sh) matching what docker.sock's
-# /containers/<id>/json accepts -- same open items as before, now load-
-# bearing for the same-instance guarantee too, not just for picking the
-# right target.
+# Confirmed 2026-09-14 (live, tests/security/test_auto_stop_pipeline.sh):
+# /etc/hostname does hold this container's own id, and docker.sock's
+# /containers/<id>/json does accept it -- own_project resolves correctly
+# and the happy-path test's own claude-code container gets stopped. The
+# same-instance guard was also exercised for real: a second, unrelated
+# throwaway project's claude-code container was made to alert, this
+# instance's security-monitor picked it up (host-wide eBPF), and this
+# script correctly refused to act on it (target_project != own_project)
+# -- the foreign container was confirmed still running afterwards.
 set -eu
 
 SIGNAL_DIR="${SIGNAL_DIR:-/var/run/falco-stop}"

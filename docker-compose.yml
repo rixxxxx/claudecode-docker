@@ -123,11 +123,12 @@ services:
   # session bus), not over a network; eBPF observes the host kernel
   # directly regardless of this container's own network namespace.
   #
-  # VERIFY (no Docker access at authoring time, see
-  # Dockerfile.security-monitor): the exact cap_add set needed for Falco's
-  # modern eBPF driver without --privileged, and whether network_mode:
-  # none is actually compatible with it -- written from documentation
-  # knowledge.
+  # Confirmed 2026-09-14: this cap_add set + network_mode: none works for
+  # Falco's modern eBPF driver without --privileged -- proven implicitly by
+  # every live security-monitor run across multiple sessions (see
+  # falco/falco.yaml's own "Verified against a live build" note and the
+  # repeated green ./tests/run-tests.sh --security runs), not just written
+  # from documentation knowledge anymore.
   security-monitor:
     build:
       context: .
@@ -247,13 +248,14 @@ services:
   # SECURITY_MONITOR_STOP_THRESHOLD=0 in .env, which cc-container checks
   # before adding this profile.
   #
-  # VERIFY (no Docker access at authoring time): falco-notify.sh's
-  # assumption that Falco resolves container.id without a docker.sock
-  # mount (unlike container.name/container.image.repository, already
-  # confirmed to need one -- see AGENTS.md); and
-  # stop-watcher-entrypoint.sh's /etc/hostname-as-self-id assumption used
-  # for the same-Compose-project check above. Both written from
-  # documentation knowledge, not confirmed on a live host.
+  # Confirmed 2026-09-14 (live, tests/security/test_auto_stop_pipeline.sh):
+  # falco-notify.sh's container.id resolution without a docker.sock mount
+  # on security-monitor works (unlike container.name/container.image.repository,
+  # which do need one -- see AGENTS.md), and stop-watcher-entrypoint.sh's
+  # /etc/hostname-as-self-id assumption used for the same-Compose-project
+  # check works too -- both the happy path (own container stopped) and the
+  # cross-project safety boundary (a foreign project's container triggers
+  # an alert here but is correctly left running) were exercised live.
   stop-watcher:
     build:
       context: .

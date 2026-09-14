@@ -57,13 +57,14 @@ priority="${priority,,}"
 # threshold (see stop-watcher-entrypoint.sh), not "whatever claude-code
 # container happens to be stop-watcher's own Compose sibling".
 #
-# VERIFY (no Docker access at authoring time): container.id is assumed
-# resolvable from the kernel/cgroup path alone, unlike container.name/
-# container.image.repository which are already confirmed (see AGENTS.md)
-# to need a docker.sock mount and show <NA> without one. If this
-# assumption is wrong, container_id below comes back empty and the alert
-# is skipped for counting purposes (fail closed -- never counts an
-# alert it can't attribute to a specific container).
+# Confirmed 2026-09-14 (live, tests/security/test_auto_stop_pipeline.sh):
+# container.id IS resolvable from the kernel/cgroup path alone here, unlike
+# container.name/container.image.repository which are confirmed (see
+# AGENTS.md) to need a docker.sock mount and show <NA> without one -- the
+# fail-closed branch below (container_id empty, alert not counted) was
+# never observed to trigger; every TEST ALERT produced a real, non-empty
+# container.id that fed correctly into the counter and, at threshold, the
+# trigger file.
 #
 # flock serializes the read-increment-write against concurrent
 # falco-notify.sh invocations (Falco spawns one process per alert,
