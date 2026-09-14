@@ -500,6 +500,15 @@ setting, read by `docker compose` on the host, not something the
 `claude-code` container (or the agent running inside it) can see or
 change — it can't silence its own alarm. See `.env.example`.
 
+For finer control than all-or-nothing, `SECURITY_MONITOR_NOTIFY_MIN_PRIORITY`
+(default: `warning`) sets a minimum priority for the popup specifically —
+`informational`/`notice`/`debug` alerts (mostly noise from Falco's bundled
+default ruleset; this repo's own rules in `falco/claude-code-rules.yaml`
+are already `warning`/`critical` only) no longer pop up by default. Same
+`docker logs`-always-shows-everything guarantee as above — this only
+affects the popup. Lower it (e.g. to `informational`) to see everything
+again. See `.env.example`.
+
 **Automatic stop on repeated CRITICAL alerts:** `cc-container --monitor`
 starts a second, intentionally tiny sidecar, `stop-watcher` (no eBPF, no
 extra Linux capabilities), alongside `security-monitor` automatically —

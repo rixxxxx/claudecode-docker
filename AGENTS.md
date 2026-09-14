@@ -210,6 +210,19 @@ touching this code:
     must stay somewhere that agent has no visibility into or control over
     (consistent with `claude-code` having no `docker.sock` and no network
     path to `security-monitor` to begin with).
+  - **`SECURITY_MONITOR_NOTIFY_MIN_PRIORITY`** (`.env`, default `warning`,
+    added 2026-09-14) gates the same popup on a minimum priority, checked
+    in `falco-notify.sh` right after the `SECURITY_MONITOR_NOTIFY` on/off
+    check above (same host-only `.env` resolution, same reasoning) and
+    after the auto-stop counter, so auto-stop keeps counting
+    CRITICAL/EMERGENCY regardless of this setting. Does not touch
+    `falco/falco.yaml`'s own `priority: debug` threshold, which stays
+    maximally permissive for `stdout_output`/`docker logs` — full audit
+    trail always, only the popup is filtered. Priority-rank comparison
+    logic covered by `tests/unit/test_falco_notify_priority_threshold.sh`
+    (extracts `priority_rank()` from `falco-notify.sh` via `sed` since the
+    script isn't sourceable as a whole -- reads stdin immediately, calls
+    `notify-send`).
 - **Auto-stop** (`stop-watcher`): stops `claude-code` automatically after
   **`SECURITY_MONITOR_STOP_THRESHOLD`** (`.env`, default 3)
   CRITICAL/EMERGENCY alerts attributed to it. `cc-container --monitor`

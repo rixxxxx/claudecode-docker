@@ -111,6 +111,36 @@ case "${SECURITY_MONITOR_NOTIFY:-true}" in
     false | 0 | no | off) exit 0 ;;
 esac
 
+# SECURITY_MONITOR_NOTIFY_MIN_PRIORITY (see docker-compose.yml/.env.example):
+# minimum priority to actually show as a desktop popup, checked here for the
+# same reason as SECURITY_MONITOR_NOTIFY above -- after the auto-stop
+# counter, which always counts CRITICAL/EMERGENCY regardless of this
+# setting. Does NOT affect stdout/`docker compose logs` either (falco.yaml's
+# own `priority: debug` stays maximally permissive there -- full audit
+# trail, e.g. for the throwaway DEBUG rules this repo's own history relies
+# on). Default "warning": this repo's own rules (falco/claude-code-rules.yaml)
+# are already warning/critical only, so this mainly hides
+# informational/notice/debug noise from Falco's bundled default ruleset.
+priority_rank() {
+    case "$1" in
+        emergency) echo 7 ;;
+        alert) echo 6 ;;
+        critical) echo 5 ;;
+        error) echo 4 ;;
+        warning) echo 3 ;;
+        notice) echo 2 ;;
+        informational) echo 1 ;;
+        debug) echo 0 ;;
+        *) echo 3 ;; # unrecognized priority word -- fail toward showing it
+                     # (warning-equivalent) rather than silently swallowing
+                     # an alert whose priority we don't understand.
+    esac
+}
+min_priority="${SECURITY_MONITOR_NOTIFY_MIN_PRIORITY:-warning}"
+if [ "$(priority_rank "$priority")" -lt "$(priority_rank "$min_priority")" ]; then
+    exit 0
+fi
+
 # SECURITY_MONITOR_NOTIFY_TIMEOUT (see docker-compose.yml/.env.example): how
 # long, in milliseconds, the toaster stays up for non-critical alerts before
 # it closes itself.
