@@ -895,6 +895,39 @@
   priority: CRITICAL
   tags: [claude-code, test]
 
+# TEST-ONLY: not a real security signal. Added 2026-09-14 alongside
+# SECURITY_MONITOR_NOTIFY_MIN_PRIORITY specifically to test that feature --
+# the two existing TEST rules above/below are both CRITICAL, so neither can
+# be used to check that a below-threshold priority (NOTICE, ranked below
+# the default "warning") actually gets suppressed from the popup while
+# still showing up in `docker compose logs`. Safe to delete any time -- it
+# lives only here, no Dockerfile/Compose change depends on it.
+#
+# Trigger (inside the claude-code container):
+#   touch /tmp/falco-notice-test
+# Expect: a "TEST ALERT" line in `docker compose logs -f security-monitor`
+# always; a desktop popup only if SECURITY_MONITOR_NOTIFY_MIN_PRIORITY is
+# "notice" or lower (informational/debug) -- NOT with the default
+# "warning". Clean up afterwards with:
+#   rm /tmp/falco-notice-test
+- rule: TEST - Falco notice-priority pipeline check
+  desc: >
+    Test-only rule with no security meaning. Confirms
+    SECURITY_MONITOR_NOTIFY_MIN_PRIORITY actually suppresses a
+    below-threshold popup while `docker compose logs` still shows it, via
+    one specific harmless command at NOTICE priority (below the default
+    "warning" threshold).
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name = touch
+    and proc.args contains "falco-notice-test"
+  output: >
+    TEST ALERT - Falco notice-priority pipeline test for claude-code
+    (command=%proc.cmdline user=%user.name container=%container.id)
+  priority: NOTICE
+  tags: [claude-code, test]
+
 # TEST-ONLY: not a real security signal, but unlike the pipeline-sanity
 # rule above, this one's output deliberately DOES contain the literal
 # substring "claude-code" -- falco-notify.sh's auto-stop counter only
