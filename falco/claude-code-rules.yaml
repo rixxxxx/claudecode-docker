@@ -138,6 +138,37 @@
 # exclusion. Single confirmed instance (one live Bash-tool call), not an
 # exhaustive guarantee across every possible tool-call shape.
 #
+# Fixed 2026-09-14 (proc.name-spoofing gap, found by cross-referencing
+# BlackBerry's "Falco-bypasses" writeup -- technique (c), "Executable-Naming"
+# -- against this repo's own rules, not discovered independently): "Unexpected
+# shell" and "Non-Claude read of ~/.claude credentials" both used to exclude
+# on `proc.pname`/`proc.name in (claude, node)` as an OR alongside the
+# pexepath hardening, not an AND. A from-birth-renamed attacker binary
+# (`cp attacker /tmp/node && /tmp/node`, comm=node at execve time, no
+# prctl() call involved) satisfied the pname branch alone and bypassed the
+# exepath check entirely -- and "Process impersonating trusted name via
+# prctl" didn't catch it either, since that rule only reacts to an actual
+# prctl(PR_SET_NAME) syscall, never a process simply named that way from
+# exec. Fixed by hardening the "node" exclusion via its own exepath too
+# (new node_binary_exepath/node_binary_pexepath macros, real path
+# /usr/local/bin/node -- fixed by the official Node tarball install in
+# Dockerfile, not npm-prefix-dependent like claude.exe's) instead of
+# dropping the name-based exclusion outright, since npm genuinely does run
+# lifecycle scripts as `sh -c "..."` with the real node process as parent
+# (confirmed live via the earlier `nc -> sh -> node` ancestor chain, see
+# "Fixed 2026-09-13" above) -- removing the exclusion entirely would have
+# made every `npm install` with a lifecycle script false-positive
+# "Unexpected shell". `claude` was dropped from both name lists entirely
+# (never observed as the real CLI's comm, which is always "Bun"/"Bun Pool
+# N"). "Process impersonating trusted name via prctl" also gated on
+# node_binary_exepath now, for symmetry (purely theoretical currently, no
+# observed legitimate case). Verified live via
+# tests/security/test_falco_rules.sh's
+# test_unexpected_shell_catches_renamed_impersonator (bypass now caught)
+# and the added assert_alert_absent check inside
+# test_network_tool_during_npm_install (real npm lifecycle-script shell
+# still correctly excluded, no new false positive).
+#
 # Fixed 2026-09-14: "Write attempt to workspace Squid override in
 # claude-code" -- see that rule's own comment (just below the macros
 # section) for the full root-cause writeup and fix. Short version: the
@@ -241,6 +272,21 @@
 
 - macro: claude_code_binary_pexepath
   condition: (proc.pexepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
+
+# Added 2026-09-14 (closing a proc.name-spoofing gap -- see the "Unexpected
+# shell"/credentials-read rules' own comments for the full writeup): the
+# real Node.js binary, from the official upstream tarball
+# (Dockerfile: `tar -C /usr/local --strip-components=1`), always at
+# /usr/local/bin/node -- a fixed, Dockerfile-guaranteed path, unlike
+# claude.exe's npm-prefix-dependent one above. Lets rules exclude
+# legitimate node-parented activity (e.g. npm running a `sh -c` lifecycle
+# script, comm=node) via the kernel-resolved executable instead of the
+# spoofable proc.name/proc.pname string.
+- macro: node_binary_exepath
+  condition: (proc.exepath = /usr/local/bin/node)
+
+- macro: node_binary_pexepath
+  condition: (proc.pexepath = /usr/local/bin/node)
 #
 # Deliberately placed here, BEFORE "Unexpected shell" below, instead of
 # near the other history rules further down. Confirmed live 2026-09-13
@@ -278,6 +324,28 @@
   priority: WARNING
   tags: [claude-code, defense-evasion]
 
+# Closed 2026-09-14 (proc.name-spoofing gap, found by cross-referencing
+# BlackBerry's "Falco-bypasses" writeup against this repo's own rules): the
+# condition used to also exclude on the raw `proc.pname in (claude, node)`
+# string -- an OR alongside the pexepath check, not an AND, so a
+# from-birth-renamed attacker binary (`cp attacker /tmp/node && /tmp/node`,
+# comm=node at execve time, no prctl() involved at all) satisfied the
+# pname branch alone and bypassed the pexepath hardening entirely. Neither
+# the pexepath check nor "Process impersonating trusted name via prctl"
+# (which only reacts to an actual prctl(PR_SET_NAME) syscall, never fires
+# for a process that's simply named that way from exec) caught this.
+# Fixed by hardening BOTH trusted parents via their real exepath instead
+# of dropping the exclusion outright: `claude` was removed from the name
+# list entirely (never observed as the real CLI's comm, which is always
+# "Bun"/"Bun Pool N" -- see below), and `node` -- genuinely needed, since
+# npm always runs lifecycle scripts as `sh -c "..."` with the real node
+# process as parent (comm=node), confirmed live via the
+# `nc -> sh -> node` ancestor chain in the OPEN ITEMS "Fixed 2026-09-13"
+# entry -- is now excluded via node_binary_pexepath (the real,
+# Dockerfile-guaranteed /usr/local/bin/node) instead of the spoofable
+# name string. See tests/security/test_falco_rules.sh for both the
+# bypass-now-caught test and the npm-lifecycle-script no-false-positive
+# regression guard.
 - rule: Unexpected shell in claude-code
   desc: >
     An interactive shell was spawned inside the claude-code container.
@@ -288,7 +356,7 @@
     spawned_process
     and claude_code_container
     and proc.name in (bash, sh, dash, zsh, ash)
-    and not (proc.pname in (claude, node) or claude_code_binary_pexepath)
+    and not (claude_code_binary_pexepath or node_binary_pexepath)
   output: >
     Shell spawned in claude-code
     (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -394,6 +462,15 @@
 # process that shows up as "Bun"). Unlike proc.name/is_exe_upper_layer,
 # this can't be spoofed by renaming or by a runtime npm update -- it's the
 # actual file the kernel resolved when the process was exec'd.
+#
+# Closed 2026-09-14 (same proc.name-spoofing gap as "Unexpected shell",
+# see that rule's comment for the full writeup): `proc.name in (claude,
+# node)` used to be an OR alongside claude_code_binary_exepath, letting a
+# from-birth-renamed binary (comm=node at execve, never calling prctl)
+# read this file undetected. Now excludes via node_binary_exepath (the
+# real /usr/local/bin/node) instead of the spoofable name; `claude` was
+# dropped from the name list entirely (never observed as the real CLI's
+# comm).
 - rule: Non-Claude read of ~/.claude credentials in claude-code
   desc: >
     A process other than claude/node/claude-code's own CLI read the OAuth
@@ -406,7 +483,7 @@
     open_read
     and claude_code_container
     and fd.name = /home/claudecode/.claude/.credentials.json
-    and not (proc.name in (claude, node) or claude_code_binary_exepath)
+    and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Non-Claude process read ~/.claude credentials in claude-code
     (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
@@ -616,6 +693,13 @@
 # installed, but an attacker's process can't make the kernel report that
 # file as its own executable just by renaming itself. So "Bun" is back in
 # the target list below, gated on the executable NOT being the real one.
+#
+# Added 2026-09-14: also gated on NOT being the real node_binary_exepath,
+# for symmetry with the other two rules hardened the same day -- purely
+# theoretical currently (no observed case of a legitimate Node.js thread
+# calling prctl(PR_SET_NAME) to rename itself to "node"/"claude"/"Bun"),
+# but cheap and consistent with treating /usr/local/bin/node as a second
+# trusted executable throughout this file, not just claude.exe.
 - rule: Process impersonating trusted name via prctl in claude-code
   desc: >
     A process inside claude-code, running from a binary other than
@@ -629,7 +713,7 @@
     and claude_code_container
     and evt.arg.option = PR_SET_NAME
     and (evt.arg.arg2_str in (claude, node) or evt.arg.arg2_str = "Bun" or evt.arg.arg2_str startswith "Bun ")
-    and not claude_code_binary_exepath
+    and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Process impersonating trusted name via prctl in claude-code
     (new_name=%evt.arg.arg2_str exe=%proc.exepath command=%proc.cmdline user=%user.name container=%container.id)

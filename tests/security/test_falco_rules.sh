@@ -43,7 +43,7 @@ export SECURITY_MONITOR_STOP_THRESHOLD=0
 cleanup() {
     "${COMPOSE[@]}" exec -T claude-code sh -c '
         rm -f ~/.local/bin/nc ~/.local/bin/sudo ~/.local/bin/su ~/.local/bin/pkexec ~/.local/bin/doas
-        rm -f ~/.bash_history
+        rm -f ~/.bash_history /tmp/node
         rm -rf /tmp/falco-test-npm-pkg /tmp/falco-pipeline-test
     ' >/dev/null 2>&1 || true
     docker_test_cleanup "$PROJECT"
@@ -169,6 +169,25 @@ test_unexpected_shell_fires() {
     assert_alert_seen "$checkpoint" "Shell spawned in claude-code" 15
 }
 
+test_unexpected_shell_catches_renamed_impersonator() {
+    # Regression test for the 2026-09-14 proc.name-spoofing fix (found by
+    # cross-referencing BlackBerry's "Falco-bypasses" writeup, technique
+    # (c), against this repo's own rules): before the fix, a shell whose
+    # PARENT was simply named "node" from birth (execve'd from a binary
+    # literally called that, never calling prctl at all) was silently
+    # excluded by the old `proc.pname in (claude, node)` OR-branch,
+    # completely bypassing the pexepath hardening AND going undetected by
+    # "Process impersonating trusted name via prctl" (which only reacts to
+    # an actual prctl(PR_SET_NAME) syscall, not a process that's simply
+    # named that way from exec). /tmp/node here is a copy of /bin/bash --
+    # not the real node.binary_exepath -- that spawns a child shell.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'cp /bin/bash /tmp/node && chmod +x /tmp/node && /tmp/node -c "bash -c \"echo falco-fake-node-test\""' >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Shell spawned in claude-code" 15
+    "${COMPOSE[@]}" exec -T claude-code rm -f /tmp/node >/dev/null 2>&1 || true
+}
+
 test_network_tool_during_npm_install() {
     # None of network_tool_binaries are installed in the base image and
     # the Squid allowlist can't reach an apt mirror to install real ones --
@@ -195,6 +214,29 @@ test_network_tool_during_npm_install() {
     ' 2>&1)"
     assert_alert_seen "$checkpoint" "Network tool executed during npm install in claude-code" 20 "npm install output + marker check:
 $npm_out"
+
+    # Regression guard for the 2026-09-14 node_binary_pexepath hardening
+    # (see falco/claude-code-rules.yaml's "Unexpected shell" comment): npm
+    # always runs a lifecycle script as `sh -c "<script>"` with the real
+    # node process (comm=node) as parent -- this postinstall run just did
+    # exactly that. That sh spawn must stay excluded via the real node
+    # binary's exepath, not fire "Unexpected shell", now that the old
+    # blanket proc.pname="node" exclusion is gone.
+    #
+    # NOT a blanket assert_alert_absent: the `docker compose exec sh -c
+    # '...'` wrapper around this whole trigger is ITSELF a legitimate,
+    # expected "Shell spawned" true positive (parent=containerd-shim, same
+    # mechanism as test_unexpected_shell_fires) -- unrelated to this guard
+    # and present in every run. Only check specifically for a
+    # parent=node-attributed alert, which is what the npm-lifecycle-script
+    # sh would produce if the node_binary_pexepath exclusion regressed.
+    local node_parented_shell_alerts
+    node_parented_shell_alerts="$("${COMPOSE[@]}" logs security-monitor 2>&1 \
+        | tail -n "+$((checkpoint + 1))" | grep "Shell spawned in claude-code" \
+        | grep -c 'parent=node ' || true)"
+    assert_equal "0" "${node_parented_shell_alerts:-0}" \
+        "npm's own lifecycle-script shell (parent=node) did not additionally trigger 'Unexpected shell'"
+
     "${COMPOSE[@]}" exec -T claude-code sh -c \
         'rm -f ~/.local/bin/nc /tmp/falco-nc-invoked; rm -rf /tmp/falco-test-npm-pkg' >/dev/null 2>&1 || true
 }
@@ -337,6 +379,7 @@ test_squid_override_read_does_not_false_positive() {
 
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
+run_test test_unexpected_shell_catches_renamed_impersonator
 run_test test_network_tool_during_npm_install
 run_test test_env_read_from_proc
 run_test test_ps_aux_does_not_false_positive
