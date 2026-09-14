@@ -202,6 +202,9 @@ services:
       # falco-notify.sh and .env.example). Critical/Emergency alerts ignore
       # this and stay until dismissed.
       SECURITY_MONITOR_NOTIFY_TIMEOUT: ${SECURITY_MONITOR_NOTIFY_TIMEOUT:-8000}
+      # Minimum priority to show as a popup at all (see falco-notify.sh and
+      # .env.example) -- same .env resolution as the two entries above.
+      SECURITY_MONITOR_NOTIFY_MIN_PRIORITY: ${SECURITY_MONITOR_NOTIFY_MIN_PRIORITY:-warning}
       # Number of CRITICAL/EMERGENCY alerts for the SAME container id (see
       # falco/claude-code-rules.yaml, falco-notify.sh) before signaling
       # stop-watcher to stop that specific container -- counted
