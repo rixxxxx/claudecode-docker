@@ -229,6 +229,64 @@
 #     network even has a path to an externally-resolving DNS server at all
 #     wasn't checked this session.
 #
+# More candidates, from a second pass over public Falco-bypass research
+# (2026-09-14, sources: armosec/curing, MatheuZSecurity/Furtex,
+# Detect-DefenseLab/CVE-2026-31431-detection-defense, mrtc0's
+# blog.ssrf.in "How to Bypass Falco" writeup, falcosecurity/falco security
+# advisories GHSA-rfgw-vmxp-hp5g/GHSA-6v9j-2vm2-ghf7/GHSA-7cq5-h4p2-h37p) --
+# relevance assessed against THIS repo's actual architecture, not generic:
+#   - io_uring (io_uring_setup/io_uring_enter/io_uring_register) --
+#     fundamental architectural blind spot: operations submitted via
+#     io_uring's shared ring buffer never hit the sys_enter_* tracepoints
+#     Falco's modern_ebpf driver hooks, so file access/writes/connects done
+#     this way are invisible regardless of which rule conditions exist.
+#     Not fixable by adding a rule -- needs Falco's KRSI-based io_uring
+#     plugin (falcosecurity/falco advisory GHSA-7cq5-h4p2-h37p, tracked
+#     upstream, not something this repo can build around on its own). No
+#     custom seccomp profile is set anywhere in this repo (confirmed via
+#     grep) -- claude-code runs Docker's default seccomp profile, whose
+#     io_uring syscall blocklist varies by Docker version on the host.
+#     Whether io_uring_setup even succeeds inside claude-code as currently
+#     configured is unverified -- check this FIRST before anything else in
+#     this entry, since if it's already blocked at the seccomp layer the
+#     rest is moot here.
+#   - proc.name-spoofing / path-pivot techniques cataloged in
+#     MatheuZSecurity/Furtex ("Axis B" of its Falco-specific bypasses) --
+#     same class of bug as the 2026-09-14 proc.pname="node"/"claude" fix
+#     above (found independently via BlackBerry's older writeup), Furtex
+#     just catalogs many more instances of it. Worth a systematic sweep of
+#     every proc.name/proc.pname-based exclusion left in this file for the
+#     same pattern, not just the two already fixed.
+#   - Furtex's BPF-map-manipulation/EDR-evasion axis -- lower relevance to
+#     THIS architecture specifically than generically advertised:
+#     security-monitor runs in a separate container with its own elevated
+#     capabilities (SYS_ADMIN/SYS_PTRACE/DAC_OVERRIDE) that claude-code
+#     does NOT have (no cap_add there) and a separate network/PID
+#     namespace -- a compromised claude-code process has no direct path to
+#     security-monitor's own eBPF maps the way this technique generally
+#     assumes (same container/namespace as the observer). Not zero risk,
+#     just not the primary concern here the way it would be for a Falco
+#     deployment observing its own namespace.
+#   - SCM_RIGHTS fd-passing breaking Falco's process-level FD tracking, and
+#     count-based rules defeated by socket reuse (both from
+#     Detect-DefenseLab/CVE-2026-31431-detection-defense) -- these are
+#     Falco ENGINE limitations, not something a rule change in this file
+#     can fix. Belongs conceptually with "Known, deliberately NOT closed"
+#     above once/if confirmed against 0.39.2, not really a "future rule to
+#     design".
+#   - `/proc/self/root` path-normalization bypass (mrtc0,
+#     blog.ssrf.in/tags/falco/): Falco's path-resolution library reportedly
+#     normalizes `/proc/self/root/etc/shadow` down to `/proc/self/etc/shadow`,
+#     dropping the `root` segment -- would defeat every fd.name-based exact-
+#     match/startswith rule in this file (the credentials-file rule, the
+#     Squid-override rule) if the same bug exists on 0.39.2. Upstream fix
+#     attempt: falcosecurity/falco PR #2202. Highest priority of this whole
+#     second pass to actually verify -- directly attacks rules this session
+#     built, and testable right now with the same DEBUG-rule/live-trigger
+#     methodology used all session (e.g. `docker compose exec claude-code
+#     cat /proc/self/root/home/claudecode/.claude/.credentials.json` while
+#     watching whether "Non-Claude read of ~/.claude credentials" fires).
+#
 # Maintenance trap, addressed 2026-09-14: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 # is this host's actual observed install path, not something
 # pinned/guaranteed by the Dockerfile. It used to be duplicated as a literal
