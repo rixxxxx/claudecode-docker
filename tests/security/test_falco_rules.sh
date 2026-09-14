@@ -308,8 +308,16 @@ test_squid_override_read_does_not_false_positive() {
     # deliberately readable (claude-code can see its own effective network
     # policy, just never change it, see AGENTS.md "Per-workspace
     # .squid-claudecode-docker overrides") -- a plain read must not alert.
+    #
+    # Reads the directory itself (ls), not a specific file inside it: the
+    # mount's contents are SQUID_WORKSPACE_DIR (docker-compose.yml, defaults
+    # to ./.squid-empty), which varies per workspace/test-harness run and
+    # may be empty -- a hardcoded filename here (00-defaults.conf) was
+    # observed present in one environment but missing in another, making
+    # the test environment-dependent. The directory itself, as the mount
+    # point, is always present regardless of contents.
     local checkpoint; checkpoint="$(log_line_count)"
-    "${COMPOSE[@]}" exec -T claude-code cat /workspace/.squid-claudecode-docker/00-defaults.conf >/dev/null
+    "${COMPOSE[@]}" exec -T claude-code ls -la /workspace/.squid-claudecode-docker/ >/dev/null
     assert_alert_absent "$checkpoint" "Write attempt to read-only Squid override in claude-code" 5
 }
 
