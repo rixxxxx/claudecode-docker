@@ -288,6 +288,31 @@ test_history_env_tampering_spawned_process() {
     assert_alert_seen "$checkpoint" "Shell history disabling command in claude-code" 15
 }
 
+test_squid_override_write_attempt_fires() {
+    # Same trigger as test_runtime_hardening.sh's
+    # test_workspace_squid_override_is_readonly (the enforcement-side
+    # counterpart) -- this is the detection-side check. Was dead until
+    # 2026-09-14: the rule used to depend on the bundled open_write macro,
+    # which requires fd.num>=0 (a successful open); a write against this
+    # read-only mount always fails with EROFS before that. See
+    # falco/claude-code-rules.yaml OPEN ITEMS for the full root-cause
+    # writeup.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'touch /workspace/.squid-claudecode-docker/security-test-write-attempt' >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Write attempt to read-only Squid override in claude-code" 15
+}
+
+test_squid_override_read_does_not_false_positive() {
+    # Regression guard for the write-intent-flags restriction: this path is
+    # deliberately readable (claude-code can see its own effective network
+    # policy, just never change it, see AGENTS.md "Per-workspace
+    # .squid-claudecode-docker overrides") -- a plain read must not alert.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code cat /workspace/.squid-claudecode-docker/00-defaults.conf >/dev/null
+    assert_alert_absent "$checkpoint" "Write attempt to read-only Squid override in claude-code" 5
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_network_tool_during_npm_install
@@ -297,5 +322,7 @@ run_test test_cloud_metadata_contact_attempt
 run_test test_privilege_escalation_attempt
 run_test test_history_file_deletion
 run_test test_history_env_tampering_spawned_process
+run_test test_squid_override_write_attempt_fires
+run_test test_squid_override_read_does_not_false_positive
 
 print_summary

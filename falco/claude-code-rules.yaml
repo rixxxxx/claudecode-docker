@@ -138,13 +138,13 @@
 # exclusion. Single confirmed instance (one live Bash-tool call), not an
 # exhaustive guarantee across every possible tool-call shape.
 #
-# Suspected dead, not yet fixed:
-#   - "Write attempt to workspace Squid override in claude-code" -- fires
-#     on open_write, but the write fails at the read-only mount (EROFS)
-#     before a fd exists; open_write likely requires a successful open.
-#     Confirmed no alert on a real host for a failing touch against that
-#     path. Needs a condition that doesn't depend on open_write's success
-#     requirement (exact fix not designed yet).
+# Fixed 2026-09-14: "Write attempt to workspace Squid override in
+# claude-code" -- see that rule's own comment (just below the macros
+# section) for the full root-cause writeup and fix. Short version: the
+# bundled open_write macro requires fd.num>=0 (a successful open), which
+# never happens for a write that fails with EROFS against the read-only
+# mount; condition rewritten to not depend on that. Verified live via
+# tests/security/test_falco_rules.sh's test_squid_override_write_attempt_fires.
 #
 # Known, deliberately NOT closed (see AGENTS.md "Runtime monitoring" for
 # the fuller writeup of why these are accepted limits, not bugs):
@@ -293,6 +293,27 @@
   priority: WARNING
   tags: [claude-code, shell]
 
+# Fixed 2026-09-14 (root-caused via a throwaway DEBUG rule on a live
+# Docker/eBPF host): the original condition used the bundled `open_write`
+# macro, which (confirmed by capturing the real event) requires fd.num>=0
+# -- i.e. a successfully opened, valid file descriptor. A write against
+# this read-only mount fails with EROFS before that, so fd.num stays -1
+# and open_write never becomes true, regardless of the path. The initial
+# theory (fd.name is <NA> here, same class of bug as the unlink/unlinkat
+# fix above) turned out to be wrong for THIS event type: the captured exit
+# event (evt.dir=<) showed fd.name correctly populated
+# (/workspace/.squid-claudecode-docker/security-test-write-attempt) and
+# rawres=-30 (EROFS) even though fd.num=-1 -- Falco resolves fd.name from
+# the syscall's path argument here, not from a live fd-table entry. Fix:
+# dropped the open_write macro entirely, match directly on the open-family
+# syscall's exit event with write-intent flags (present in evt.args on
+# both the enter and exit event, confirmed via the same capture) and
+# fd.name -- neither requires fd.num>=0. evt.dir=< also incidentally
+# avoids double-firing on the paired enter event (fd.name is <NA> there,
+# so it can't match this condition anyway, but being explicit is safer
+# than relying on that side effect if a future Falco version changes it).
+# Verified live: a failing `touch` against this path now fires the alert
+# (see tests/security/test_falco_rules.sh).
 - rule: Write attempt to workspace Squid override in claude-code
   desc: >
     A write was attempted against /workspace/.squid-claudecode-docker
@@ -300,14 +321,19 @@
     AGENTS.md "Per-workspace .squid-claudecode-docker overrides") -- a
     write attempt here means something tried to widen its own network
     policy from inside the sandbox. Detection-side counterpart to the hard
-    enforcement test in tests/security/test_runtime_hardening.sh.
+    enforcement test in tests/security/test_runtime_hardening.sh. Matches
+    on write-intent flags, not just any open, because this path is
+    deliberately readable (claude-code can see its own effective policy,
+    just never change it) -- only write attempts should alert here.
   condition: >
-    open_write
-    and claude_code_container
+    claude_code_container
+    and evt.type in (open, openat, openat2)
+    and evt.dir = <
+    and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
     and fd.name startswith /workspace/.squid-claudecode-docker
   output: >
     Write attempt to read-only Squid override in claude-code
-    (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
+    (file=%fd.name result=%evt.rawres command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, filesystem]
 
