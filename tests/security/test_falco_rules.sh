@@ -43,7 +43,7 @@ export SECURITY_MONITOR_STOP_THRESHOLD=0
 cleanup() {
     "${COMPOSE[@]}" exec -T claude-code sh -c '
         rm -f ~/.local/bin/nc ~/.local/bin/sudo ~/.local/bin/su ~/.local/bin/pkexec ~/.local/bin/doas
-        rm -f ~/.bash_history /tmp/node
+        rm -f ~/.bash_history /tmp/node ~/.claude/.credentials.json
         rm -rf /tmp/falco-test-npm-pkg /tmp/falco-test-npm-pkg-2 /tmp/falco-pipeline-test
     ' >/dev/null 2>&1 || true
     docker_test_cleanup "$PROJECT"
@@ -415,6 +415,53 @@ test_squid_override_read_does_not_false_positive() {
     assert_alert_absent "$checkpoint" "Write attempt to read-only Squid override in claude-code" 5
 }
 
+test_squid_override_write_via_proc_self_root_fires() {
+    # Regression test for the 2026-09-14 path-normalization-bypass fix
+    # (found by cross-referencing mrtc0's "How to Bypass Falco" writeup
+    # against this repo's own rules): confirmed live that Falco reports
+    # fd.name as the literal, unresolved syscall argument for a
+    # /proc/self/root/-prefixed path (keeps the /proc/self/root/ prefix
+    # instead of canonicalizing through the magic-link) -- the old
+    # `fd.name startswith /workspace/.squid-claudecode-docker` condition
+    # never matched that, even though the exact same file was targeted and
+    # the write still correctly failed at the filesystem level (EROFS
+    # either way). Fixed via `contains` instead of `startswith`.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'touch /proc/self/root/workspace/.squid-claudecode-docker/security-test-write-attempt' >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Write attempt to read-only Squid override in claude-code" 15
+}
+
+test_credentials_read_fires() {
+    # No prior automated coverage for this rule at all -- only ever
+    # manually confirmed once (see falco/claude-code-rules.yaml OPEN ITEMS
+    # "Resolved 2026-09-11"). The host OAuth-credential-reuse mount
+    # (docker-compose.yml's commented-out `${HOME}/.claude:...` line) is
+    # inactive by default, including in this throwaway test project, so
+    # ~/.claude/.credentials.json here is purely container-local -- safe
+    # to create/overwrite/delete, not a real credentials file.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'mkdir -p ~/.claude && echo dummy > ~/.claude/.credentials.json && cat ~/.claude/.credentials.json' >/dev/null
+    assert_alert_seen "$checkpoint" "Non-Claude process read ~/.claude credentials in claude-code" 15
+}
+
+test_credentials_read_via_proc_self_root_fires() {
+    # Regression test for the same 2026-09-14 path-normalization-bypass fix
+    # as test_squid_override_write_via_proc_self_root_fires above, for the
+    # credentials-read rule this time -- confirmed live via a throwaway
+    # DEBUG rule that dev/ino matched the direct-path baseline exactly (the
+    # real file was read) while fd.name kept the unresolved
+    # /proc/self/root/ prefix, so the old exact-match condition
+    # (`fd.name = /home/claudecode/.claude/.credentials.json`) never fired.
+    # Fixed via `endswith "/.claude/.credentials.json"` instead.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'mkdir -p ~/.claude && echo dummy > ~/.claude/.credentials.json && cat /proc/self/root/home/claudecode/.claude/.credentials.json' >/dev/null
+    assert_alert_seen "$checkpoint" "Non-Claude process read ~/.claude credentials in claude-code" 15
+    "${COMPOSE[@]}" exec -T claude-code rm -f ~/.claude/.credentials.json >/dev/null 2>&1 || true
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -429,5 +476,8 @@ run_test test_history_file_deletion
 run_test test_history_env_tampering_spawned_process
 run_test test_squid_override_write_attempt_fires
 run_test test_squid_override_read_does_not_false_positive
+run_test test_squid_override_write_via_proc_self_root_fires
+run_test test_credentials_read_fires
+run_test test_credentials_read_via_proc_self_root_fires
 
 print_summary

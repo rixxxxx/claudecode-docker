@@ -274,18 +274,24 @@
 #     can fix. Belongs conceptually with "Known, deliberately NOT closed"
 #     above once/if confirmed against 0.39.2, not really a "future rule to
 #     design".
-#   - `/proc/self/root` path-normalization bypass (mrtc0,
-#     blog.ssrf.in/tags/falco/): Falco's path-resolution library reportedly
-#     normalizes `/proc/self/root/etc/shadow` down to `/proc/self/etc/shadow`,
-#     dropping the `root` segment -- would defeat every fd.name-based exact-
-#     match/startswith rule in this file (the credentials-file rule, the
-#     Squid-override rule) if the same bug exists on 0.39.2. Upstream fix
-#     attempt: falcosecurity/falco PR #2202. Highest priority of this whole
-#     second pass to actually verify -- directly attacks rules this session
-#     built, and testable right now with the same DEBUG-rule/live-trigger
-#     methodology used all session (e.g. `docker compose exec claude-code
-#     cat /proc/self/root/home/claudecode/.claude/.credentials.json` while
-#     watching whether "Non-Claude read of ~/.claude credentials" fires).
+# Fixed 2026-09-14: `/proc/self/root` path-normalization bypass (candidate
+# from mrtc0's blog.ssrf.in/tags/falco/ writeup, confirmed live against
+# this repo's own rules rather than assumed). Not quite the same mechanism
+# mrtc0 described -- Falco didn't normalize `/proc/self/root/...` down to
+# drop the `root` segment on this build (0.39.2); instead it reported
+# fd.name as the literal, unresolved syscall argument (kept the full
+# `/proc/self/root/` prefix), confirmed via a throwaway DEBUG rule to be
+# the exact same underlying file (matching dev/ino against the direct-path
+# baseline). Same practical bypass either way: any fd.name exact-
+# match/startswith condition fails regardless of which normalization bug
+# causes it. Affected both "Non-Claude read of ~/.claude credentials"
+# (fixed: exact match -> `endswith "/.claude/.credentials.json"`) and
+# "Write attempt to workspace Squid override" (fixed: `startswith` ->
+# `contains "/.squid-claudecode-docker"`) -- both now immune to whatever
+# prefix is used to reach the path. Verified live via
+# tests/security/test_falco_rules.sh's
+# test_credentials_read_via_proc_self_root_fires and
+# test_squid_override_write_via_proc_self_root_fires.
 #
 # Maintenance trap, addressed 2026-09-14: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 # is this host's actual observed install path, not something
@@ -481,6 +487,18 @@
 # than relying on that side effect if a future Falco version changes it).
 # Verified live: a failing `touch` against this path now fires the alert
 # (see tests/security/test_falco_rules.sh).
+#
+# Closed 2026-09-14 (same path-normalization bypass as the credentials-read
+# rule, see that rule's comment for the full writeup): `fd.name startswith
+# /workspace/.squid-claudecode-docker` never fired for `touch
+# /proc/self/root/workspace/.squid-claudecode-docker/...` -- confirmed via
+# a throwaway DEBUG rule that Falco reports fd.name as the literal,
+# unresolved syscall argument (keeping the /proc/self/root/ prefix) rather
+# than canonicalizing through the magic-link, so `startswith` never
+# matched even though the write was correctly still blocked at the
+# filesystem level (EROFS either way). Fixed by matching on `contains`
+# instead of `startswith` -- immune to whatever prefix was used to reach
+# the path.
 - rule: Write attempt to workspace Squid override in claude-code
   desc: >
     A write was attempted against /workspace/.squid-claudecode-docker
@@ -497,7 +515,7 @@
     and evt.type in (open, openat, openat2)
     and evt.dir = <
     and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
-    and fd.name startswith /workspace/.squid-claudecode-docker
+    and fd.name contains "/.squid-claudecode-docker"
   output: >
     Write attempt to read-only Squid override in claude-code
     (file=%fd.name result=%evt.rawres command=%proc.cmdline user=%user.name container=%container.id)
@@ -568,6 +586,23 @@
 # real /usr/local/bin/node) instead of the spoofable name; `claude` was
 # dropped from the name list entirely (never observed as the real CLI's
 # comm).
+# Closed 2026-09-14 (path-normalization bypass, found by cross-referencing
+# mrtc0's blog.ssrf.in "How to Bypass Falco" writeup -- see OPEN ITEMS
+# "More candidates" -- against this repo's own rules): the exact-match
+# `fd.name = /home/claudecode/.claude/.credentials.json` condition never
+# fired for `cat /proc/self/root/home/claudecode/.claude/.credentials.json`
+# -- confirmed via a throwaway DEBUG rule that this reads the exact same
+# file (dev=51 ino=8010218 identical to the direct-path baseline) but
+# Falco reports fd.name as the literal, unresolved syscall argument
+# (`/proc/self/root/home/claudecode/.claude/.credentials.json`), never
+# canonicalized through the /proc/self/root magic-link. Different
+# mechanism than mrtc0 described (no "root" segment gets silently
+# dropped on this Falco/driver build -- the whole prefix just isn't
+# resolved at all), same practical bypass. Fixed by matching on the path
+# suffix instead of the full absolute path -- immune to whatever prefix
+# was used to reach the file (bind mount, /proc/*/root, /proc/*/cwd,
+# symlink, etc.), since the filename+parent-dir combination is specific
+# enough on its own.
 - rule: Non-Claude read of ~/.claude credentials in claude-code
   desc: >
     A process other than claude/node/claude-code's own CLI read the OAuth
@@ -579,7 +614,7 @@
   condition: >
     open_read
     and claude_code_container
-    and fd.name = /home/claudecode/.claude/.credentials.json
+    and fd.name endswith "/.claude/.credentials.json"
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Non-Claude process read ~/.claude credentials in claude-code
