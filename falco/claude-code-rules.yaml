@@ -3,7 +3,7 @@
 # rules_file). See README "Runtime monitoring (optional)" and AGENTS.md.
 #
 # ============================================================
-# OPEN ITEMS (as of 2026-09-11) -- update this block, don't let it rot
+# OPEN ITEMS (as of 2026-09-14) -- update this block, don't let it rot
 # ============================================================
 # Resolved 2026-09-11 (real-host false positive, not just theory): the
 # proc.exepath anchor used below was wrong -- hardcoded as
@@ -117,17 +117,26 @@
 #     failure) instead of asserting something this environment cannot
 #     satisfy -- see that test's comment.
 #
-# Open, unresolved question:
-#   - Does a *real* claude-code Bash-tool call (issued by the assistant
-#     itself, not `docker compose exec` from the host) have proc.pexepath
-#     = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe directly, or does
-#     something sit in between (e.g. rtk's PreToolUse hook, see
-#     RTK.md/README "RTK") that would make the exepath-hardened
-#     "Unexpected shell" rule false-positive on every single legitimate
-#     Bash tool call? Not scriptable (needs a real interactive session, not
-#     `docker compose exec`) -- see AGENTS.md "Runtime monitoring" for the
-#     step-by-step manual verification procedure and where to record the
-#     outcome once run.
+# Resolved 2026-09-14 (real interactive session, per AGENTS.md "Runtime
+# monitoring"'s manual procedure): does a *real* claude-code Bash-tool call
+# (issued by the assistant itself, not `docker compose exec` from the host)
+# have proc.pexepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+# directly, or does something sit in between (e.g. rtk's PreToolUse hook,
+# see README "RTK") that would make the exepath-hardened "Unexpected shell"
+# rule false-positive on every single legitimate Bash tool call? Verified
+# live: `cc-container --monitor` running, `docker compose logs -f
+# security-monitor` tailed on the host, the assistant issued `echo
+# falco-real-bash-tool-check` via its own real Bash tool (going through the
+# actual agentic tool-call path, including any PreToolUse hook -- not
+# scriptable via `docker compose exec`). No "Shell spawned in claude-code"
+# line appeared within the ~15s watch window -- the exclusion holds for a
+# real, assistant-issued Bash tool call, not just for a `docker compose
+# exec` shell. Didn't need the optional throwaway-DEBUG-rule step (AGENTS.md
+# procedure step 5) since no false positive occurred, so the concrete
+# real-world proc.pexepath/proc.pname value for this path was not captured
+# -- only that whatever it is, it still satisfies the rule's existing
+# exclusion. Single confirmed instance (one live Bash-tool call), not an
+# exhaustive guarantee across every possible tool-call shape.
 #
 # Suspected dead, not yet fixed:
 #   - "Write attempt to workspace Squid override in claude-code" -- fires
@@ -150,13 +159,24 @@
 #   - npm_package_install_ancestor only checks 5 ancestor levels
 #     (proc.aname[2..5]).
 #
-# Maintenance trap: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe (used as the
-# proc.exepath anchor in three rules) is this host's actual observed
-# install path, not something pinned/guaranteed by the Dockerfile. If the
-# npm global prefix or install method ever changes, these three rules
-# silently stop excluding legitimate claude-code activity (fail toward
-# false positives, not toward blindness -- the safer failure mode, but
-# still worth fixing if it happens).
+# Maintenance trap, addressed 2026-09-14: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+# is this host's actual observed install path, not something
+# pinned/guaranteed by the Dockerfile. It used to be duplicated as a literal
+# in three rules' conditions; now centralized into the
+# claude_code_binary_exepath / claude_code_binary_pexepath macros (defined
+# near the pexepath-hardening comment above) so a path change is a one-line
+# (well, two-line) edit instead of three. Deliberately NOT loosened to a
+# glob suffix match (e.g. "*/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+# -- /home/claudecode is owned by the same UID 1000 the CLI itself runs as,
+# so a glob anchor would let an attacker with code exec inside the container
+# create a matching fake path and spawn an excluded shell under it, defeating
+# the exact reason proc.pexepath hardening exists (proc.name is spoofable,
+# see comment above; a loose path anchor would be too). Instead, if the npm
+# global prefix or install method ever changes, tests/security/test_falco_rules.sh's
+# claude-exe-path-anchor check now fails loudly by comparing this literal
+# against the real installed path on the image -- silent drift (fail toward
+# false positives, the safer failure mode, but still silent) is now a loud,
+# fixable CI failure instead.
 #
 # Matches on container.image.repository, not container.name: this repo's
 # claude-code container names are dynamic per workspace
@@ -205,6 +225,21 @@
 # "Bun", but not make the kernel report a different file as their actual
 # executable. Not yet confirmed by triggering this rule on a live host.
 #
+# Centralized 2026-09-14 (see "Maintenance trap" above): the claude.exe path
+# used to be duplicated as a literal in three rules' conditions. Two macros
+# below are the single point of truth now -- change the path in exactly
+# these two places, not in the rules themselves. Two macros, not one,
+# because proc.exepath (own process) and proc.pexepath (parent process) are
+# different fields; a macro can't parametrize which field it checks.
+# tests/security/test_falco_rules.sh has a companion check that fails loudly
+# if this literal ever drifts from the real installed path on the image,
+# instead of the rules silently stopping to exclude legitimate activity.
+- macro: claude_code_binary_exepath
+  condition: (proc.exepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
+
+- macro: claude_code_binary_pexepath
+  condition: (proc.pexepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
+#
 # Deliberately placed here, BEFORE "Unexpected shell" below, instead of
 # near the other history rules further down. Confirmed live 2026-09-13
 # (Falco 0.39.2): Falco reports only ONE alert per matching event here --
@@ -251,7 +286,7 @@
     spawned_process
     and claude_code_container
     and proc.name in (bash, sh, dash, zsh, ash)
-    and not (proc.pname in (claude, node) or proc.pexepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
+    and not (proc.pname in (claude, node) or claude_code_binary_pexepath)
   output: >
     Shell spawned in claude-code
     (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -343,7 +378,7 @@
     open_read
     and claude_code_container
     and fd.name = /home/claudecode/.claude/.credentials.json
-    and not (proc.name in (claude, node) or proc.exepath = /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe)
+    and not (proc.name in (claude, node) or claude_code_binary_exepath)
   output: >
     Non-Claude process read ~/.claude credentials in claude-code
     (file=%fd.name command=%proc.cmdline user=%user.name container=%container.id)
@@ -559,7 +594,7 @@
     and claude_code_container
     and evt.arg.option = PR_SET_NAME
     and (evt.arg.arg2_str in (claude, node) or evt.arg.arg2_str = "Bun" or evt.arg.arg2_str startswith "Bun ")
-    and proc.exepath != /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+    and not claude_code_binary_exepath
   output: >
     Process impersonating trusted name via prctl in claude-code
     (new_name=%evt.arg.arg2_str exe=%proc.exepath command=%proc.cmdline user=%user.name container=%container.id)

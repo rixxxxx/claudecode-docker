@@ -139,6 +139,24 @@ if ! wait_for_log "$checkpoint" "TEST ALERT - Falco pipeline is working" 30; the
 fi
 "${COMPOSE[@]}" exec -T claude-code rm -f /tmp/falco-pipeline-test >/dev/null 2>&1 || true
 
+test_claude_exe_path_anchor_current() {
+    # Companion check for falco/claude-code-rules.yaml's
+    # claude_code_binary_exepath / claude_code_binary_pexepath macros (see
+    # that file's "Maintenance trap" comment). Those macros hardcode the
+    # claude-code CLI's real, kernel-resolved executable path as an
+    # anti-spoofing anchor in three rules. If the npm global prefix or
+    # install method ever changes, this test fails loudly instead of the
+    # rules silently stopping to exclude legitimate claude-code activity.
+    # Independent of the Falco/monitoring pipeline -- just resolves the
+    # installed binary's real path the same way the kernel would.
+    local expected="/home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+    local shim actual
+    shim="$("${COMPOSE[@]}" exec -T claude-code sh -c 'command -v claude' 2>&1 | tr -d '\r')"
+    actual="$("${COMPOSE[@]}" exec -T claude-code sh -c "readlink -f '$shim'" 2>&1 | tr -d '\r')"
+    assert_equal "$expected" "$actual" \
+        "update claude_code_binary_exepath AND claude_code_binary_pexepath in falco/claude-code-rules.yaml to the new path"
+}
+
 test_unexpected_shell_fires() {
     # True-positive direction only: a docker-compose-exec'd shell has a
     # parent chain (containerd-shim) that is neither claude/node nor the
@@ -270,6 +288,7 @@ test_history_env_tampering_spawned_process() {
     assert_alert_seen "$checkpoint" "Shell history disabling command in claude-code" 15
 }
 
+run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_network_tool_during_npm_install
 run_test test_env_read_from_proc
