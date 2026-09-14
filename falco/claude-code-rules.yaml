@@ -190,6 +190,45 @@
 #   - npm_package_install_ancestor only checks 5 ancestor levels
 #     (proc.aname[2..5]).
 #
+# Candidate future rules, not yet designed (syscall-level attack-chain gap
+# analysis, 2026-09-14 -- unlike the "deliberately NOT closed" list above,
+# these are NOT accepted limits, just not built yet). Confirmed while
+# writing this list: claude-code has no `cap_drop` and no
+# `security_opt: no-new-privileges` in docker-compose.yml, so it retains
+# Docker's full default capability set (including CAP_NET_RAW) -- makes
+# the raw-socket item below concretely exploitable today, not theoretical.
+#   - Highest priority, undermines this session's own credentials-file
+#     hardening directly: ptrace / process_vm_readv / process_vm_writev --
+#     an attacker doesn't need to open ~/.claude/.credentials.json (the
+#     "Non-Claude read" rule above) if they can read the live claude-code
+#     process's memory instead. Completely unmonitored.
+#   - socket(AF_PACKET, ...) / socket(AF_INET, SOCK_RAW, ...) -- claude-code
+#     keeps CAP_NET_RAW (Docker default, never dropped, confirmed above).
+#     Raw sockets bypass egress-proxy's domain allowlist entirely at
+#     L2/L3, a potential exfiltration/scanning channel outside this file's
+#     whole network-monitoring model.
+#   - mount / umount2 -- the read-only mounts (.squid-claudecode-docker,
+#     the Squid policy itself) are a core security boundary in this repo,
+#     but the mount syscall itself is never observed, only the resulting
+#     write attempt against one specific path (and even that only since
+#     2026-09-14, see "Fixed 2026-09-14" above).
+#   - unshare(CLONE_NEWUSER) + writes to /proc/self/uid_map /
+#     /proc/self/setgroups -- classic unprivileged user-namespace escape
+#     primitive; no-new-privileges isn't set either, compounding risk if a
+#     setuid binary ever exists on the image.
+#   - capset -- a UID-1000 process attempting to add capabilities to
+#     itself has no legitimate reason to ever do that.
+#   - memfd_create + execveat -- fileless execution (binary runs entirely
+#     from memory, never touches disk), evades every file/path-based
+#     detection angle in this file.
+#   - setresuid/setuid called directly -- privilege-escalation path that
+#     doesn't go through sudo/su/pkexec/doas, so the existing
+#     binary-name-based "Privilege escalation attempt" rule can't see it.
+#   - Unclear, needs live verification before designing a rule (not simply
+#     assumed): DNS-based exfiltration (UDP:53) -- whether the `internal`
+#     network even has a path to an externally-resolving DNS server at all
+#     wasn't checked this session.
+#
 # Maintenance trap, addressed 2026-09-14: /home/claudecode/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 # is this host's actual observed install path, not something
 # pinned/guaranteed by the Dockerfile. It used to be duplicated as a literal
