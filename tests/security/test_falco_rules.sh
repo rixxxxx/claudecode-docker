@@ -478,6 +478,47 @@ test_process_memory_access_fires() {
     assert_alert_seen "$checkpoint" "Process memory access attempt in claude-code" 15
 }
 
+test_raw_socket_creation_fires() {
+    # New 2026-09-15: next item after ptrace in OPEN ITEMS "Candidate future
+    # rules". The "Packet socket was created in a container" assertion below
+    # is Falco's OWN bundled rule (regression guard, confirmed reliable) --
+    # note it fires on the socket() *attempt*, not confirmed success (see
+    # claude-code-rules.yaml's "Raw INET socket creation attempt" comment):
+    # confirmed live that claude-code, running non-root with no ambient
+    # capabilities, cannot actually create EITHER AF_PACKET or
+    # AF_INET/AF_INET6 SOCK_RAW sockets here (both return real EPERM --
+    # CapEff is all-zero despite CAP_NET_RAW sitting in the unused
+    # capability bounding set), reproduced even after
+    # `docker compose up -d --force-recreate claude-code`. So "concretely
+    # exploitable today" (OPEN ITEMS' original framing) doesn't hold for
+    # raw sockets in this specific container config at all.
+    #
+    # The AF_INET/AF_INET6 assertion soft-skips instead of hard-failing
+    # (same pattern as test_cloud_metadata_contact_attempt above) for
+    # exactly that reason: the attack this half of the custom rule targets
+    # isn't actually possible in this environment, independent of Falco.
+    # Left in (not deleted) so it self-upgrades to a real PASS if a future
+    # environment (e.g. running as root, or with ambient CAP_NET_RAW
+    # explicitly granted) ever makes the attack possible again.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import socket
+try:
+    socket.socket(socket.AF_PACKET, socket.SOCK_RAW).close()
+except OSError:
+    pass
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW).close()
+except OSError:
+    pass" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Packet socket was created in a container" 15
+    if wait_for_log "$checkpoint" "Raw INET socket creation attempt in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (AF_INET/AF_INET6 SOCK_RAW was creatable and captured on this host)"
+    else
+        echo "  SKIP test_raw_socket_creation_fires (AF_INET/AF_INET6 half): confirmed live that this container's kernel already blocks AF_INET/AF_INET6 SOCK_RAW creation (EPERM/EPROTONOSUPPORT) independent of Falco, and Falco does not surface the failed syscall either -- see falco/claude-code-rules.yaml's \"Raw INET socket creation attempt\" rule comment. Not counted as a failure."
+    fi
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -496,5 +537,6 @@ run_test test_squid_override_write_via_proc_self_root_fires
 run_test test_credentials_read_fires
 run_test test_credentials_read_via_proc_self_root_fires
 run_test test_process_memory_access_fires
+run_test test_raw_socket_creation_fires
 
 print_summary

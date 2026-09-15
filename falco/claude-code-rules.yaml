@@ -192,11 +192,22 @@
 #
 # Candidate future rules, not yet designed (syscall-level attack-chain gap
 # analysis, 2026-09-14 -- unlike the "deliberately NOT closed" list above,
-# these are NOT accepted limits, just not built yet). Confirmed while
-# writing this list: claude-code has no `cap_drop` and no
-# `security_opt: no-new-privileges` in docker-compose.yml, so it retains
-# Docker's full default capability set (including CAP_NET_RAW) -- makes
-# the raw-socket item below concretely exploitable today, not theoretical.
+# these are NOT accepted limits, just not built yet). Written 2026-09-14:
+# claude-code has no `cap_drop` and no `security_opt: no-new-privileges` in
+# docker-compose.yml, so it retains Docker's full default capability set
+# (including CAP_NET_RAW) in its BOUNDING set -- originally read as making
+# the raw-socket item below "concretely exploitable today, not
+# theoretical". CORRECTED 2026-09-15 (see that item's own writeup below):
+# this reasoning missed that claude-code runs as non-root (UID 1000, no
+# ambient capabilities, no file capabilities on any binary) -- a Docker
+# default capability sitting in the bounding set is NOT usable by a
+# non-root process without ambient propagation or file caps, confirmed
+# live via `/proc/self/status` showing CapEff=0000000000000000 for every
+# exec'd process in this container regardless of what CapBnd contains.
+# This capability-usability gap is specific to CAP_NET_RAW/raw sockets in
+# this list -- it does not automatically apply to other items below
+# (e.g. unshare(CLONE_NEWUSER) and capset are unprivileged-by-design
+# operations that don't need an existing capability to attempt).
 #   - DONE 2026-09-14: ptrace / process_vm_readv / process_vm_writev -- see
 #     "Process memory access attempt in claude-code" rule below and its
 #     own comment for the live-verification writeup (ptrace confirmed
@@ -204,11 +215,26 @@
 #     separately triggered; no dedicated false-positive baseline against a
 #     real extended claude-code session was done either -- worth
 #     revisiting if this ever false-positives in practice).
-#   - socket(AF_PACKET, ...) / socket(AF_INET, SOCK_RAW, ...) -- claude-code
-#     keeps CAP_NET_RAW (Docker default, never dropped, confirmed above).
-#     Raw sockets bypass egress-proxy's domain allowlist entirely at
-#     L2/L3, a potential exfiltration/scanning channel outside this file's
-#     whole network-monitoring model.
+#   - DONE 2026-09-15, but the underlying risk turned out smaller than
+#     assumed: socket(AF_PACKET, ...) / socket(AF_INET, SOCK_RAW, ...).
+#     Live-tested extensively (see "Raw INET socket creation attempt in
+#     claude-code" rule's own comment below for the full multi-round
+#     writeup): NEITHER AF_PACKET NOR AF_INET/AF_INET6 SOCK_RAW can
+#     actually be created in this container as a non-root process --
+#     confirmed via a single process printing `/proc/self/status` (CapEff
+#     all zero) immediately before both socket() attempts, both of which
+#     returned EPERM. Falco's own bundled "Packet socket created in
+#     container" rule fires on the socket() *attempt* regardless of
+#     success (same design as this file's own ptrace rule) -- its alert
+#     during earlier testing was mistaken for proof of a successful
+#     AF_PACKET socket, which it is not. Net effect: the preamble's
+#     "concretely exploitable today" framing for raw sockets specifically
+#     does not hold in this container config; the custom "Raw INET socket
+#     creation attempt" rule was still added as defense-in-depth for
+#     configs where it might (e.g. running as root, or with ambient
+#     CAP_NET_RAW explicitly granted), but could not be live-fire-verified
+#     here since neither the AF_PACKET nor the AF_INET precondition holds
+#     -- treated like the cloud-metadata rule's untestable-here status.
 #   - mount / umount2 -- the read-only mounts (.squid-claudecode-docker,
 #     the Squid policy itself) are a core security boundary in this repo,
 #     but the mount syscall itself is never observed, only the resulting
@@ -1009,3 +1035,95 @@
   priority: CRITICAL
   tags: [claude-code, credentials, defense-evasion]
 
+# Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
+# after ptrace/process_vm_readv/writev above; that section's preamble
+# originally called this "concretely exploitable today" based on
+# claude-code retaining CAP_NET_RAW in its capability BOUNDING set -- see
+# the CORRECTED 2026-09-15 note there, which this rule's own testing is
+# what triggered).
+#
+# LIVE-VERIFIED 2026-09-15 across several rounds on a real Docker/eBPF
+# host (tests/security/test_falco_rules.sh, plus manual `docker compose
+# exec` checks, including against a freshly `--force-recreate`d
+# container). Findings, in order (each one corrected the previous):
+#   1. Falco's OWN bundled ruleset (loaded before this file, see "CONFIRMED
+#      2026-09-13" above re: first-match-wins) already has a rule for
+#      AF_PACKET/SOCK_RAW: "Packet socket created in container" (NOTICE),
+#      firing reliably (log: `socket_info=domain=17(AF_PACKET)
+#      type=524291 proto=0 ...`). Since it loads first, a custom rule for
+#      the same domain would never win the per-event race -- this rule
+#      below does not try to cover AF_PACKET at all, by design.
+#   2. The first draft's `evt.args contains "SOCK_RAW"` never matched
+#      anything: Falco decodes the socket() `domain` arg symbolically
+#      (`17(AF_PACKET)`) but not `type`, which prints as a raw undecoded
+#      int (`524291` = `SOCK_RAW(3) | SOCK_CLOEXEC(0x80000)`, since Python
+#      OR's in CLOEXEC by default) -- fixed by matching `evt.arg.type`
+#      numerically instead of text-matching evt.args.
+#   3. Initially misread bundled-rule firing (point 1) as proof AF_PACKET
+#      raw sockets actually succeed here, unlike AF_INET/AF_INET6 (which
+#      returned real EPERM/EPROTONOSUPPORT from the kernel). CORRECTED:
+#      the bundled rule's condition (`evt.type=socket and evt.dir=<` plus
+#      the domain check) has no success check at all -- it fires on the
+#      *attempt*, exactly like this file's own ptrace rule, regardless of
+#      whether the socket() call actually succeeds. Proven by running a
+#      single process that printed `/proc/self/status` immediately before
+#      attempting BOTH `socket(AF_PACKET, SOCK_RAW)` and
+#      `socket(AF_INET, SOCK_RAW, IPPROTO_RAW)`: CapEff was
+#      `0000000000000000` (all capabilities dropped from the *effective*
+#      set) and BOTH calls returned EPERM, reproduced again after
+#      `docker compose up -d --force-recreate claude-code` to rule out a
+#      stale container. Root cause: claude-code runs as non-root (UID
+#      1000, Dockerfile's `USER claudecode`) with no ambient capabilities
+#      and no file capabilities on any binary -- a capability sitting in
+#      Docker's default *bounding* set (`CapBnd` was non-zero and does
+#      include CAP_NET_RAW) is not usable by a non-root process without
+#      one of those two propagation mechanisms, neither of which this
+#      project configures. So neither raw-socket domain is actually
+#      creatable here, not just AF_INET -- the OPEN ITEMS preamble's
+#      "concretely exploitable today" framing for raw sockets was based on
+#      an incomplete reading of Linux capability semantics.
+#   4. Separately, and left unresolved: even a maximally broad, completely
+#      unconditioned throwaway rule (`condition: evt.type = socket`, no
+#      claude_code_container filter, no domain/type check) produced ZERO
+#      log lines for a plain, guaranteed-successful `AF_INET/SOCK_STREAM`
+#      socket (needs no capability at all) in the persistent container --
+#      meaning Falco's bundled rule firing for AF_PACKET specifically is
+#      not proof that a broad `evt.type=socket` condition works in
+#      general on this driver build (0.39.2, kernel 6.8.0-139-generic);
+#      something narrower than domain=17 may be required. Not root-caused
+#      further since it doesn't change this rule's own conclusion --
+#      revisit only if this rule needs to fire in an environment where
+#      AF_INET/AF_INET6 SOCK_RAW is actually creatable.
+# Net effect: this rule is kept as defense-in-depth for any environment
+# where AF_INET/AF_INET6 SOCK_RAW is actually creatable (root, or ambient
+# CAP_NET_RAW explicitly granted) but could NOT be live-fire-verified in
+# this repo's own container, since it runs non-root without ambient caps
+# and the attack precondition itself never holds here -- same category as
+# the "Contact cloud metadata service" rule's documented untestable-here
+# status, not an open bug to keep chasing.
+- rule: Raw INET socket creation attempt in claude-code
+  desc: >
+    A process inside claude-code created an AF_INET/AF_INET6 SOCK_RAW
+    socket -- lets a process craft raw IP packets (custom ICMP, spoofed
+    source addresses, protocol scanning) entirely below the domain-
+    allowlist model the egress-proxy enforces. AF_PACKET raw sockets are
+    already caught by Falco's own bundled "Packet socket created in
+    container" rule (confirmed live 2026-09-15, though it fires on the
+    attempt, not confirmed success -- see comment above). Confirmed
+    2026-09-15 that claude-code's non-root, no-ambient-capabilities setup
+    already blocks creation of BOTH AF_PACKET and AF_INET/AF_INET6
+    SOCK_RAW sockets here regardless of Falco (see comment above) -- this
+    rule is defense-in-depth for configurations where that isn't true, not
+    a closed, live-fire-verified detection here.
+  condition: >
+    claude_code_container
+    and evt.type = socket
+    and evt.dir = <
+    and evt.arg.domain in (2, AF_INET, PF_INET, 10, AF_INET6, PF_INET6)
+    and (evt.arg.type = 3 or evt.arg.type = 524291)
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Raw INET socket creation attempt in claude-code
+    (args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, network, defense-evasion]
