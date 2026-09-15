@@ -638,6 +638,43 @@ print('capset:', ret, ctypes.get_errno())" >/dev/null 2>&1
     fi
 }
 
+test_fileless_execution_via_memfd_fires() {
+    # New 2026-09-15: next item after capset in OPEN ITEMS "Candidate
+    # future rules". Unlike every other item closed this session,
+    # memfd_create()+execveat() genuinely succeed here (no capability or
+    # seccomp barrier, confirmed live) -- but detection turned out to
+    # already be solved without adding any new rule: writing a raw copy of
+    # /bin/true into a memfd and execveat()-ing it directly (no shebang, no
+    # interpreter re-exec) triggers Falco's OWN BUNDLED "Fileless execution
+    # via memfd_create" rule (CRITICAL) -- confirmed live with
+    # `exe_flags=EXE_WRITABLE|EXE_FROM_MEMFD`. This is a regression guard
+    # (like test_raw_socket_creation_fires's "Packet socket was created in
+    # a container" assertion), not a new custom rule -- see
+    # claude-code-rules.yaml's memfd_create/execveat OPEN ITEMS entry for
+    # the full writeup, including the separate shebang-script variant
+    # (already caught by the existing "Unexpected shell" rule instead).
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes, os, sys
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+fd = libc.memfd_create(b'totallynotmalware', 0)
+with open('/bin/true', 'rb') as f:
+    os.write(fd, f.read())
+os.lseek(fd, 0, os.SEEK_SET)
+SYS_execveat = 322
+AT_EMPTY_PATH = 0x1000
+argv = (ctypes.c_char_p * 2)(b'rawelftest', None)
+envp = (ctypes.c_char_p * 1)(None)
+sys.stdout.flush()
+pid = os.fork()
+if pid == 0:
+    libc.syscall(SYS_execveat, fd, b'', argv, envp, AT_EMPTY_PATH)
+    os._exit(1)
+else:
+    os.waitpid(pid, 0)" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Fileless execution via memfd_create" 15
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -661,5 +698,6 @@ run_test test_mount_attempt_fires
 run_test test_unshare_attempt_fires
 run_test test_uid_map_write_attempt_fires
 run_test test_capset_attempt_fires
+run_test test_fileless_execution_via_memfd_fires
 
 print_summary

@@ -304,9 +304,36 @@
 #     only rare-syscall attempt rule in this file confirmed captured live
 #     (mount, umount2, unshare all were not) -- not separately resolved
 #     yet at write time.
-#   - memfd_create + execveat -- fileless execution (binary runs entirely
-#     from memory, never touches disk), evades every file/path-based
-#     detection angle in this file.
+#   - DONE 2026-09-15, but not by adding a rule -- already covered.
+#     memfd_create + execveat (fileless execution) turned out to be the
+#     first item in this whole "Candidate future rules" list where the
+#     underlying attack genuinely works here (confirmed live: both
+#     memfd_create() and execveat() succeed for this non-root process, no
+#     capability or seccomp barrier applies, unlike every other item
+#     closed so far this session) -- but it's ALSO the first item where
+#     detection was already fully solved before this session started.
+#     Live-tested two variants: (1) execveat() on a memfd containing a
+#     shebang script (`#!/bin/sh`) -- the kernel's script-interpreter
+#     resolution re-execs a real on-disk `/bin/sh` (dash), which the
+#     existing "Unexpected shell in claude-code" rule already catches
+#     (confirmed live: `command=dash /dev/fd/4 parent=python3`). (2)
+#     execveat() on a memfd containing a raw copy of /bin/true (no
+#     shebang, no interpreter re-exec) -- Falco's OWN BUNDLED ruleset has
+#     a purpose-built rule for exactly this, "Fileless execution via
+#     memfd_create" (CRITICAL), confirmed firing live with
+#     `evt_res=SUCCESS proc_exepath=memfd:totallynotmalware
+#     exe_flags=EXE_WRITABLE|EXE_FROM_MEMFD`. Neither variant needed a new
+#     custom rule; a regression-guard test was added instead (see
+#     "test_fileless_execution_via_memfd_fires" in
+#     tests/security/test_falco_rules.sh) so future Falco/ruleset upgrades
+#     don't silently lose this coverage -- same "verify the bundled
+#     ruleset first" lesson as the raw-socket rule's AF_PACKET half.
+#     Separately: a maximally broad debug rule matching
+#     `evt.type in (memfd_create, execveat)` directly (not the resulting
+#     execve) caught nothing, consistent with the SECOND CONSOLIDATED
+#     FINDING above -- irrelevant here since the resulting execve (a
+#     heavily-instrumented event type) is what both working rules
+#     actually key off, not the memfd_create/execveat syscalls themselves.
 #   - setresuid/setuid called directly -- privilege-escalation path that
 #     doesn't go through sudo/su/pkexec/doas, so the existing
 #     binary-name-based "Privilege escalation attempt" rule can't see it.
