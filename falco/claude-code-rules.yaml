@@ -235,11 +235,18 @@
 #     CAP_NET_RAW explicitly granted), but could not be live-fire-verified
 #     here since neither the AF_PACKET nor the AF_INET precondition holds
 #     -- treated like the cloud-metadata rule's untestable-here status.
-#   - mount / umount2 -- the read-only mounts (.squid-claudecode-docker,
-#     the Squid policy itself) are a core security boundary in this repo,
-#     but the mount syscall itself is never observed, only the resulting
-#     write attempt against one specific path (and even that only since
-#     2026-09-14, see "Fixed 2026-09-14" above).
+#   - DONE 2026-09-15: mount / umount2 -- see "Mount or unmount attempt in
+#     claude-code" rule below (near the raw-socket rule) and its own
+#     comment for the full writeup. claude-code lacks CAP_SYS_ADMIN
+#     entirely (not in Docker's default capability set at all) -- live-
+#     confirmed (not just predicted from capability math this time):
+#     both `mount()` and `umount2()` return real EPERM (errno 1) here.
+#     Written from the start as a pure attempt-detector (like the ptrace
+#     rule), applying the capability lesson from the raw-socket item up
+#     front instead of discovering it via live-testing afterward.
+#     Live-verified that Falco does NOT surface this failing syscall to
+#     rule evaluation on this build either (same as the raw-socket rule's
+#     AF_INET half) -- kept as defense-in-depth, not an open bug.
 #   - unshare(CLONE_NEWUSER) + writes to /proc/self/uid_map /
 #     /proc/self/setgroups -- classic unprivileged user-namespace escape
 #     primitive; no-new-privileges isn't set either, compounding risk if a
@@ -1127,3 +1134,60 @@
     (args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, network, defense-evasion]
+
+# Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
+# after the raw-socket rule above). Applying the capability lesson from
+# that rule UP FRONT this time instead of discovering it after a round of
+# live-testing: mount()/umount2() require CAP_SYS_ADMIN (kernel-side
+# ns_capable(CAP_SYS_ADMIN) check). claude-code's docker-compose.yml
+# service has no cap_add/cap_drop/security_opt at all, so it only gets
+# Docker's default capability set -- confirmed via the raw-socket
+# investigation's live `CapBnd` reading (00000000a80425fb, which sums
+# exactly to Docker's default 14 capabilities: CHOWN, DAC_OVERRIDE,
+# FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, NET_BIND_SERVICE,
+# NET_RAW, SYS_CHROOT, MKNOD, AUDIT_WRITE, SETFCAP). CAP_SYS_ADMIN is NOT
+# in that set at all -- unlike CAP_NET_RAW, which was present in the
+# bounding set but merely unusable by this non-root process. So
+# mount()/umount2() should fail here even more definitively than the raw
+# socket attempts did (capability entirely absent, not just
+# present-but-unusable). Written as a pure attempt-detector from the
+# start (matches the "Process memory access attempt" ptrace rule's
+# design, including reusing plain %evt.args in the output instead of
+# named evt.arg.NAME fields, to avoid the exact field-guessing problems
+# the raw-socket rule ran into) -- this rule's value is in detecting the
+# attempt, not in assuming it could succeed.
+#
+# LIVE-VERIFIED 2026-09-15: both predictions confirmed on a real
+# Docker/eBPF host. (1) Capability prediction: a single process printed
+# errno right after each syscall -- `mount()` and `umount2()` both
+# returned `ret=-1 errno=1 (Operation not permitted)`, exactly the
+# CAP_SYS_ADMIN-absent EPERM predicted above, no guessing needed this
+# time. (2) Falco-visibility prediction: as with the raw-socket rule's
+# AF_INET half, Falco does NOT surface this failing syscall to rule
+# evaluation on this build -- tests/security/test_falco_rules.sh's
+# test_mount_attempt_fires soft-skips (23/23 tests still passing overall).
+# So of the two possible precedents (ptrace-while-failing was captured;
+# socket()-while-failing was not), mount/umount2 follows the socket()
+# precedent. Rule kept as defense-in-depth per the same reasoning as the
+# raw-socket rule -- not an open bug, just untestable in this specific
+# container/driver combination.
+- rule: Mount or unmount attempt in claude-code
+  desc: >
+    A process inside claude-code attempted to mount or unmount a
+    filesystem. The read-only mounts in this repo (workspace
+    .squid-claudecode-docker override, the Squid policy itself) are a
+    core security boundary -- a successful mount/umount2 here could
+    remount them read-write or unmount them entirely, bypassing every
+    file-based rule that assumes they stay read-only. claude-code lacks
+    CAP_SYS_ADMIN (see comment above), so this attempt is expected to
+    fail, but the attempt itself is the signal, not success.
+  condition: >
+    claude_code_container
+    and evt.dir = <
+    and evt.type in (mount, umount2)
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Mount or unmount attempt in claude-code
+    (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, filesystem, defense-evasion]

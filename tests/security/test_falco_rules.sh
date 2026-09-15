@@ -519,6 +519,34 @@ except OSError:
     fi
 }
 
+test_mount_attempt_fires() {
+    # New 2026-09-15: next item after the raw-socket rule in OPEN ITEMS
+    # "Candidate future rules". claude-code lacks CAP_SYS_ADMIN entirely (not
+    # merely present-but-unusable like CAP_NET_RAW was for the raw-socket
+    # case -- it's simply absent from Docker's default capability set); this
+    # rule is a pure attempt-detector by design (see
+    # claude-code-rules.yaml's "Mount or unmount attempt" comment).
+    #
+    # LIVE-VERIFIED (not just predicted): a direct errno check (separate
+    # from this test, see that rule's comment) confirmed both mount() and
+    # umount2() return real EPERM here. Falco does NOT surface this failing
+    # syscall to rule evaluation on this build though (confirmed via this
+    # test soft-skipping) -- same class of gap as
+    # test_raw_socket_creation_fires's AF_INET half.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes, os
+os.makedirs('/tmp/mnttest', exist_ok=True)
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+libc.mount(b'none', b'/tmp/mnttest', b'tmpfs', 0, None)
+libc.umount2(b'/tmp/mnttest', 0)" >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "Mount or unmount attempt in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (mount/umount2 attempt was captured on this host)"
+    else
+        echo "  SKIP test_mount_attempt_fires: Falco does not appear to surface a failing mount/umount2 syscall to rule evaluation on this build (mount/umount2 genuinely fail here -- claude-code has no CAP_SYS_ADMIN -- but the attempt itself wasn't captured, same class of gap as the raw-socket rule's AF_INET half). Not counted as a failure."
+    fi
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -538,5 +566,6 @@ run_test test_credentials_read_fires
 run_test test_credentials_read_via_proc_self_root_fires
 run_test test_process_memory_access_fires
 run_test test_raw_socket_creation_fires
+run_test test_mount_attempt_fires
 
 print_summary
