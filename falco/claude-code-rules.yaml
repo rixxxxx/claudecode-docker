@@ -208,6 +208,35 @@
 # this list -- it does not automatically apply to other items below
 # (e.g. unshare(CLONE_NEWUSER) and capset are unprivileged-by-design
 # operations that don't need an existing capability to attempt).
+#
+# SECOND CONSOLIDATED FINDING, 2026-09-15, after closing four more items
+# below (mount, umount2, unshare, capset): none of their attempt-detector
+# rules could be live-fire-verified, and this was checked thoroughly, not
+# assumed -- a maximally broad throwaway debug rule (`condition:
+# claude_code_container and evt.type in (mount, umount2, unshare,
+# capset)`, deliberately no `evt.dir` filter so it catches enter events
+# too, no exclusion macros) produced ZERO log lines across all four
+# syscalls, triggered together in one process in the same test run. So
+# this isn't a masking bug, a wrong `evt.dir` direction, or an exclusion
+# macro accidentally matching -- Falco's driver on this build (0.39.2,
+# modern_ebpf, kernel 6.8.0-139-generic) appears to generate no evaluable
+# event at all for these four specific syscalls, regardless of direction
+# or outcome. This is a different failure mode than the raw-socket
+# rule's AF_INET half (where the underlying attack is also blocked, but
+# separately Falco doesn't surface it either) -- ptrace/process_vm_readv/
+# process_vm_writev remain the only rare/attempt-style syscalls in this
+# file confirmed captured live; every other one added this session
+# (socket failures, mount, umount2, unshare, capset, and the uid_map open
+# event) was not, despite the same rule-writing pattern. Plausible
+# explanation, not independently confirmed against Falco's own source:
+# modern_ebpf (a newer, leaner driver than the legacy kernel-module probe)
+# may simply not instrument every syscall Falco's rule language can
+# reference -- ptrace being common enough in security tooling to warrant
+# inclusion, while mount/umount2/unshare/capset are not. Each affected
+# rule below is kept as defense-in-depth regardless (all are still
+# correctly designed, and none of this affects hosts/driver versions
+# where these syscalls ARE captured) -- see each rule's own comment for
+# its specific soft-skip in tests/security/test_falco_rules.sh.
 #   - DONE 2026-09-14: ptrace / process_vm_readv / process_vm_writev -- see
 #     "Process memory access attempt in claude-code" rule below and its
 #     own comment for the live-verification writeup (ptrace confirmed
@@ -247,12 +276,34 @@
 #     Live-verified that Falco does NOT surface this failing syscall to
 #     rule evaluation on this build either (same as the raw-socket rule's
 #     AF_INET half) -- kept as defense-in-depth, not an open bug.
-#   - unshare(CLONE_NEWUSER) + writes to /proc/self/uid_map /
-#     /proc/self/setgroups -- classic unprivileged user-namespace escape
-#     primitive; no-new-privileges isn't set either, compounding risk if a
-#     setuid binary ever exists on the image.
-#   - capset -- a UID-1000 process attempting to add capabilities to
-#     itself has no legitimate reason to ever do that.
+#   - DONE 2026-09-15: unshare(CLONE_NEWUSER) + writes to
+#     /proc/self/uid_map / /proc/self/setgroups -- see "Unshare attempt in
+#     claude-code" and "Write attempt to uid_map or setgroups in
+#     claude-code" rules below (near the mount rule) for the full writeup.
+#     Unlike mount/raw-sockets, this one genuinely needed live testing
+#     before it could be assessed at all (it's unprivileged by design, no
+#     capability math could predict the outcome) -- live-confirmed via a
+#     controlled A/B test that Docker's own default seccomp profile
+#     blocks it here (CLONE_NEWUSER requires CAP_SYS_ADMIN under Docker's
+#     default profile, which claude-code lacks), not the classic
+#     unprivileged_userns_clone sysctl (confirmed still enabled) or
+#     AppArmor (no denial logged). Already closed by Docker's defaults,
+#     independent of anything this project configures. Falco does not
+#     surface either half live (the failing unshare() attempt, or the
+#     /proc/self/uid_map write attempt -- the latter live-confirmed via a
+#     maximally broad throwaway debug rule too, not just the specific
+#     one) -- both rules soft-skip in tests/security/test_falco_rules.sh,
+#     same treatment as the mount/raw-socket gaps.
+#   - DONE 2026-09-15: capset -- see "Capset attempt in claude-code" rule
+#     below (near the uid_map rule) for the full writeup. CAP_SETPCAP is
+#     one of Docker's default capabilities but, like CAP_NET_RAW, sits
+#     unused in claude-code's bounding set only (CapEff/CapPrm both
+#     empty) -- any capset() call trying to add a capability is expected
+#     to fail with EPERM. Whether Falco captures the attempt live is part
+#     of the planned follow-up deep-dive into why ptrace is so far the
+#     only rare-syscall attempt rule in this file confirmed captured live
+#     (mount, umount2, unshare all were not) -- not separately resolved
+#     yet at write time.
 #   - memfd_create + execveat -- fileless execution (binary runs entirely
 #     from memory, never touches disk), evades every file/path-based
 #     detection angle in this file.
@@ -1191,3 +1242,155 @@
     (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, filesystem, defense-evasion]
+
+# Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
+# after mount/umount2 above). Unlike the previous two items,
+# unshare(CLONE_NEWUSER) is explicitly *unprivileged by design* -- it
+# needs no existing capability, so the "claude-code lacks CAP_X" reasoning
+# that closed the raw-socket and mount items does not apply here (see the
+# OPEN ITEMS preamble's own note about this exception). This made it a
+# genuinely open question, resolved live BEFORE writing this rule (not
+# guessed, per the lesson from the raw-socket item):
+#
+# LIVE-VERIFIED 2026-09-15: `unshare(CLONE_NEWUSER)` fails with EPERM in
+# claude-code. Root-caused with a controlled A/B test (identical kernel,
+# only the container's seccomp setting changed): a plain `python:3-slim`
+# container with Docker's default seccomp profile got
+# `ret=-1 errno=1 (EPERM)`; the same container with
+# `--security-opt seccomp=unconfined` got `ret=0` (success). The two
+# classic alternate explanations were checked and ruled out first: the
+# kernel's own gate, `/proc/sys/kernel/unprivileged_userns_clone`, is `1`
+# (allowed) both on the host and inside the container, and no AppArmor
+# denial appeared in `dmesg`/`journalctl -k` (AppArmor denials are
+# normally logged even in enforce mode, unlike a silent seccomp
+# SCMP_ACT_ERRNO, which matches the complete absence of any log trace
+# here). Conclusion: Docker's own default seccomp profile blocks
+# `unshare`/`clone` with `CLONE_NEWUSER` unless the container has
+# CAP_SYS_ADMIN (a known upstream hardening, moby/moby#34787) --
+# claude-code doesn't have it (confirmed in the mount/umount2 rule's own
+# comment above), so this specific escape primitive is already closed
+# here by Docker's defaults, independent of anything this project
+# configures. This rule is defense-in-depth for configurations that
+# might disable/replace the default seccomp profile, not a closed gap
+# today.
+#
+# Condition deliberately does NOT try to match the `clone` syscall or any
+# CLONE_NEWUSER flag value: `clone()` is extremely common (every
+# Bun/Node thread uses it) and its flags argument would hit the exact
+# same "guess the numeric encoding" trap that cost multiple live-test
+# rounds on the raw-socket rule (see that rule's comment). `unshare()` on
+# its own, by contrast, is rare enough for a Node/Bun/Python-based
+# process that alerting on ANY call to it (no flag filtering, matching
+# the ptrace/mount rules' own precedent of not filtering on target/path)
+# should carry negligible false-positive risk. `clone(CLONE_NEWUSER,
+# ...)` (creating the namespace via clone() directly instead of a
+# separate unshare() call) is a known, deliberately accepted gap this
+# rule does not cover.
+- rule: Unshare attempt in claude-code
+  desc: >
+    A process inside claude-code called unshare() -- most commonly used
+    to create a new user namespace (CLONE_NEWUSER), the classic
+    unprivileged-escalation primitive (map self to UID 0 inside the new
+    namespace). Docker's default seccomp profile blocks this without
+    CAP_SYS_ADMIN, which claude-code doesn't have, so this is expected to
+    fail here -- the attempt itself is the signal, not success.
+  condition: >
+    claude_code_container
+    and evt.dir = <
+    and evt.type = unshare
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Unshare attempt in claude-code
+    (args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, defense-evasion, privilege-escalation]
+
+# Added 2026-09-15, companion to the unshare rule above: covers the
+# follow-up step of the same escape technique (writing "0 <uid> 1" to
+# /proc/self/uid_map maps the calling process to UID 0 inside a
+# successfully created user namespace) so the chain is still watched even
+# if unshare() ever succeeds in some other configuration where this
+# rule's sibling didn't fire, or vice versa. Modeled on the proven
+# pattern from "Write attempt to workspace Squid override in claude-code"
+# above (write-intent flags + fd.name via `contains`, immune to the
+# `/proc/self/` magic-link prefix per that rule's own writeup) --
+# expected to work the same way here since both are "open with
+# write-intent flags against a specific path" detections.
+#
+# LIVE-VERIFIED 2026-09-15 that it does NOT, however: `echo "0 1000 1" >
+# /proc/self/uid_map` produced a real, distinct failure (shell reported
+# "I/O error", i.e. EIO -- not EPERM/EINVAL as guessed) but neither this
+# rule nor even a maximally broad throwaway debug rule matching ANY
+# open/openat/openat2 exit event in the container caught anything at all
+# for it -- no event, not a masked one. Unlike the Squid override path
+# (a real file on a read-only bind mount), /proc/*/uid_map is a synthetic,
+# kernel-generated file with its own open/write handlers
+# (proc_uid_map_operations, not the regular VFS path) -- plausibly why it
+# doesn't produce a normal, rule-visible open exit event on this Falco
+# build. This is now the fourth distinct "Falco doesn't surface this
+# specific failing/unusual operation" gap found in this session (sockets,
+# mount/umount2, unshare, now this) -- a recurring characteristic of this
+# Falco/driver combination rather than a one-off. Kept as defense-in-depth
+# per the same reasoning as those rules, not an open bug to keep chasing.
+- rule: Write attempt to uid_map or setgroups in claude-code
+  desc: >
+    A process inside claude-code attempted to write to its own
+    /proc/*/uid_map or /proc/*/setgroups -- the step that actually maps a
+    process to UID 0 inside a new user namespace, completing the
+    unshare(CLONE_NEWUSER) escalation chain. Alerts regardless of whether
+    the write succeeds.
+  condition: >
+    claude_code_container
+    and evt.type in (open, openat, openat2)
+    and evt.dir = <
+    and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
+    and (fd.name contains "/uid_map" or fd.name contains "/setgroups")
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Write attempt to uid_map or setgroups in claude-code
+    (file=%fd.name result=%evt.rawres command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, filesystem, privilege-escalation]
+
+# Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
+# after unshare above). Applying the capability lesson up front again:
+# capset() can only ADD a capability to a process's effective/permitted
+# set if that capability is already in its permitted set (or the process
+# has CAP_SETPCAP to raise from its bounding set) -- CAP_SETPCAP is one
+# of Docker's default 14 capabilities, so it sits in claude-code's
+# capability BOUNDING set, but (same reasoning as CAP_NET_RAW for the
+# raw-socket rule) is not usable by this non-root, no-ambient-capability
+# process: CapEff/CapPrm are both empty here (confirmed live during the
+# raw-socket investigation), so any capset() call trying to add a
+# capability not already effective/permitted -- i.e. any capability at
+# all, since none are -- is expected to fail with EPERM. Not yet
+# separately live-confirmed for capset specifically (unlike mount/unshare
+# above, this one wasn't individually errno-checked before writing this
+# comment) -- if it turns out to behave differently, that's worth
+# revisiting.
+#
+# Written as a pure attempt-detector (matches ptrace/mount/unshare
+# above), reusing plain %evt.args rather than named fields. Given the
+# pattern from every other rare-syscall attempt rule added this session
+# (mount, umount2, unshare all failed to be captured by Falco live,
+# ptrace being the sole exception) do NOT assume this one will fire
+# either without checking -- see OPEN ITEMS for the planned follow-up
+# "deep analysis" of whether this is a fixable condition issue or a
+# genuine, consistent driver limitation across all of them.
+- rule: Capset attempt in claude-code
+  desc: >
+    A process inside claude-code called capset() -- attempting to modify
+    its own capability sets. A UID-1000 process with empty
+    effective/permitted capability sets has no legitimate reason to ever
+    call this (it can only fail or no-op); a real attempt is a strong
+    privilege-escalation signal regardless of outcome.
+  condition: >
+    claude_code_container
+    and evt.dir = <
+    and evt.type = capset
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Capset attempt in claude-code
+    (args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, privilege-escalation, defense-evasion]

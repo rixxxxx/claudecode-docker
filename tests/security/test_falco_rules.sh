@@ -547,6 +547,97 @@ libc.umount2(b'/tmp/mnttest', 0)" >/dev/null 2>&1
     fi
 }
 
+test_unshare_attempt_fires() {
+    # New 2026-09-15: next item after mount/umount2 in OPEN ITEMS "Candidate
+    # future rules". Unlike mount/raw-sockets, unshare(CLONE_NEWUSER) needs
+    # no capability at all (unprivileged by design) -- LIVE-VERIFIED (not
+    # predicted) via a controlled A/B test that Docker's own default seccomp
+    # profile blocks it here regardless (CLONE_NEWUSER requires
+    # CAP_SYS_ADMIN under Docker's default profile; the classic
+    # unprivileged_userns_clone sysctl and AppArmor were both checked and
+    # ruled out as the cause). So this call is expected to fail with EPERM
+    # here, same as ptrace/mount -- this rule is a pure attempt-detector by
+    # design (see claude-code-rules.yaml's "Unshare attempt" comment).
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes
+ctypes.CDLL('libc.so.6', use_errno=True).unshare(0x10000000)" >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "Unshare attempt in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (unshare attempt was captured on this host)"
+    else
+        echo "  SKIP test_unshare_attempt_fires: Falco does not appear to surface a failing unshare() syscall to rule evaluation on this build, same class of gap as the mount/raw-socket rules' soft-skipped halves. Not counted as a failure."
+    fi
+}
+
+test_uid_map_write_attempt_fires() {
+    # New 2026-09-15: companion to test_unshare_attempt_fires, covering the
+    # follow-up step of the same escalation chain (writing "0 <uid> 1" to
+    # /proc/self/uid_map is what actually maps the calling process to UID 0
+    # inside a new user namespace). Triggered independently of whether
+    # unshare() itself succeeds -- writing to /proc/self/uid_map without a
+    # freshly created, not-yet-forked-from namespace fails too, which is
+    # fine in principle (same "attempt is the signal" reasoning as the
+    # Squid-override write rule this pattern is copied from).
+    #
+    # LIVE-VERIFIED that it doesn't fire though, and soft-skips like the
+    # mount/raw-socket rules' gaps: the write genuinely fails (shell
+    # reports "I/O error", i.e. EIO), but neither this rule nor even a
+    # maximally broad throwaway debug rule matching ANY open/openat/
+    # openat2 exit event caught anything for it at all. /proc/*/uid_map is
+    # a synthetic kernel-generated file (not a regular VFS file like the
+    # Squid override path), plausibly why it doesn't produce a normal,
+    # rule-visible open event on this Falco build -- see
+    # claude-code-rules.yaml's "Write attempt to uid_map or setgroups"
+    # comment for the full writeup.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'echo "0 1000 1" > /proc/self/uid_map' >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "Write attempt to uid_map or setgroups in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (uid_map write attempt was captured on this host)"
+    else
+        echo "  SKIP test_uid_map_write_attempt_fires: Falco does not appear to surface an open/openat/openat2 event for /proc/self/uid_map at all on this build (confirmed via a maximally broad throwaway debug rule too) -- same class of gap as the other syscall-visibility soft-skips in this file. Not counted as a failure."
+    fi
+}
+
+test_capset_attempt_fires() {
+    # New 2026-09-15: next item after unshare/uid_map in OPEN ITEMS
+    # "Candidate future rules". CAP_SETPCAP sits unused in claude-code's
+    # capability bounding set only (CapEff/CapPrm both empty, confirmed
+    # during the raw-socket investigation), so capget() (read-only) should
+    # succeed while capset() (attempting to add a capability that isn't
+    # already effective/permitted -- i.e. any of them) should fail with
+    # EPERM. x86_64 raw syscall numbers used directly since glibc has no
+    # capget/capset wrapper (libcap's cap_set_proc() wraps this, but isn't
+    # necessarily installed in the image).
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes, os
+SYS_capget, SYS_capset = 125, 126
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+
+class CapHeader(ctypes.Structure):
+    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]
+
+class CapData(ctypes.Structure):
+    _fields_ = [('effective', ctypes.c_uint32), ('permitted', ctypes.c_uint32), ('inheritable', ctypes.c_uint32)]
+
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+hdr = CapHeader(version=_LINUX_CAPABILITY_VERSION_3, pid=0)
+data = (CapData * 2)()
+libc.syscall(SYS_capget, ctypes.byref(hdr), ctypes.byref(data))
+
+hdr2 = CapHeader(version=_LINUX_CAPABILITY_VERSION_3, pid=0)
+data[0].effective |= (1 << 21)
+data[0].permitted |= (1 << 21)
+ret = libc.syscall(SYS_capset, ctypes.byref(hdr2), ctypes.byref(data))
+print('capset:', ret, ctypes.get_errno())" >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "Capset attempt in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (capset attempt was captured on this host)"
+    else
+        echo "  SKIP test_capset_attempt_fires: Falco does not appear to surface a capset() syscall to rule evaluation on this build -- same class of gap as the mount/umount2/unshare soft-skips in this file (see planned follow-up deep-dive in falco/claude-code-rules.yaml OPEN ITEMS). Not counted as a failure."
+    fi
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -567,5 +658,8 @@ run_test test_credentials_read_via_proc_self_root_fires
 run_test test_process_memory_access_fires
 run_test test_raw_socket_creation_fires
 run_test test_mount_attempt_fires
+run_test test_unshare_attempt_fires
+run_test test_uid_map_write_attempt_fires
+run_test test_capset_attempt_fires
 
 print_summary
