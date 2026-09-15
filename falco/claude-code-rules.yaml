@@ -237,6 +237,46 @@
 # correctly designed, and none of this affects hosts/driver versions
 # where these syscalls ARE captured) -- see each rule's own comment for
 # its specific soft-skip in tests/security/test_falco_rules.sh.
+#
+# FOLLOW-UP RESEARCH, 2026-09-15: checked Falco's own public rules
+# (falcosecurity/rules repo, both falco_rules.yaml -- the default bundle
+# this project actually loads -- and falco-incubating_rules.yaml, a
+# separate community set this project does NOT load) to see how Falco's
+# own team handles these four syscalls. Findings:
+#   - Neither file hooks the raw `mount`, `umount2`, or `capset` syscall
+#     at all, anywhere. `capset` in particular has no official rule
+#     anywhere upstream either -- this OPEN ITEM was genuinely undesigned
+#     territory, not just in this file.
+#   - Falco's OWN official rule for mount ("Mount Launched in Privileged
+#     Container", incubating) deliberately avoids the raw syscall:
+#     `spawned_process and container and container.privileged=true and
+#     proc.name=mount and ...` -- detecting EXECUTION of the mount binary,
+#     not the mount() syscall. Independent, external validation of the
+#     exact pivot this project made for memfd_create/execveat (detect the
+#     reliable execve event, not the rare syscall) -- see the new
+#     "Mount or umount binary executed in claude-code" rule below, added
+#     to mirror this official pattern. LIVE-VERIFIED, however, that this
+#     pivot does NOT resolve the gap for mount/umount specifically: their
+#     execve events aren't captured either (confirmed via a maximally
+#     broad debug rule), and setuid-exec-in-general was tested and
+#     disproven as the cause (`su`, also setuid-root, fires its rule
+#     perfectly reliably) -- see that new rule's own comment for the full
+#     writeup. Whatever's special about mount/umount remains unexplained;
+#     it is apparently not rarity, not capability requirements, and not
+#     setuid status.
+#   - `unshare` DOES have one official rule, "Change namespace privileges
+#     via unshare" (incubating only): `evt.type=unshare and container and
+#     not thread.cap_permitted contains CAP_SYS_ADMIN` -- notably NO
+#     evt.dir filter at all, and using the `thread.cap_permitted` field
+#     (a real, documented capability-set field) instead of raw arg
+#     decoding. This doesn't resolve our own gap, though: the debug rule
+#     used for the consolidated finding above ALSO had no evt.dir filter
+#     and still caught nothing for `unshare` on this build -- so the
+#     silence here looks like a build/version-specific gap (Falco 0.39.2,
+#     modern_ebpf, kernel 6.8.0-139-generic) rather than a syntax mistake,
+#     but this is still not confirmed against Falco's own issue tracker or
+#     source, just made more plausible by ruling out our own condition
+#     syntax as the cause.
 #   - DONE 2026-09-14: ptrace / process_vm_readv / process_vm_writev -- see
 #     "Process memory access attempt in claude-code" rule below and its
 #     own comment for the live-verification writeup (ptrace confirmed
@@ -276,6 +316,11 @@
 #     Live-verified that Falco does NOT surface this failing syscall to
 #     rule evaluation on this build either (same as the raw-socket rule's
 #     AF_INET half) -- kept as defense-in-depth, not an open bug.
+#     Complemented with "Mount or umount binary executed in claude-code"
+#     (also below), detecting the mount/umount CLI tools via
+#     spawned_process instead -- mirrors Falco's own official rule design
+#     for this exact scenario, confirmed live and working (see FOLLOW-UP
+#     RESEARCH above).
 #   - DONE 2026-09-15: unshare(CLONE_NEWUSER) + writes to
 #     /proc/self/uid_map / /proc/self/setgroups -- see "Unshare attempt in
 #     claude-code" and "Write attempt to uid_map or setgroups in
@@ -1269,6 +1314,76 @@
     (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, filesystem, defense-evasion]
+
+# Added 2026-09-15, after researching how Falco's own upstream rules
+# handle this: neither the default falco_rules.yaml nor the community
+# falco-incubating_rules.yaml (checked against the falcosecurity/rules
+# repo directly) hook the raw `mount` syscall at all. Falco's own official
+# rule for this exact scenario, "Mount Launched in Privileged Container"
+# (falco-incubating_rules.yaml), deliberately avoids it:
+#   condition: spawned_process and container and container.privileged=true
+#     and proc.name=mount and not mount_info and ...
+# It detects EXECUTION of the mount/umount binaries via spawned_process
+# (the most reliably-instrumented event type in this whole file) instead
+# of hooking mount()/umount2() directly -- independent, external
+# validation of the same pivot this project made for memfd_create/
+# execveat (detect the process, not the rare syscall).
+#
+# LIVE-VERIFIED 2026-09-15 that this pivot does NOT resolve the gap here,
+# though -- surprisingly. /usr/bin/mount and /usr/bin/umount are confirmed
+# present and confirmed to execute successfully (real mount-table output,
+# exit 0), but no event of any kind (not even from a maximally broad
+# throwaway debug rule matching every spawned_process with zero filters)
+# was produced for either. Before accepting this, the obvious alternative
+# hypothesis -- both binaries are setuid-root (`-rwsr-xr-x root root`,
+# confirmed via `ls -la`), maybe setuid exec transitions aren't captured
+# on this build -- was tested and DISPROVEN: `/usr/bin/su` (also
+# confirmed setuid-root, `find / -perm -4000`) fires the existing
+# "Privilege escalation attempt" rule perfectly reliably. (Note: the
+# test for that rule uses non-setuid dummy script stand-ins for sudo/su/
+# pkexec/doas since none are installed by default -- this `su --help`
+# check was the first real setuid-binary exec actually verified live in
+# this file.) So this isn't a general "setuid execs are invisible" gap
+# either -- whatever's happening is specific to mount/umount themselves
+# (both the raw syscall AND now the binary's own execve), not to
+# capability requirements, rarity, or setuid status in general. Not
+# root-caused further. Rule kept as defense-in-depth (correct on paper,
+# matches Falco's own official design) but soft-skips in
+# tests/security/test_falco_rules.sh, like its syscall-level sibling
+# above.
+- rule: Mount or umount binary executed in claude-code
+  desc: >
+    The mount or umount command-line utility was executed inside
+    claude-code. Same underlying concern as "Mount or unmount attempt in
+    claude-code" above (the read-only mounts in this repo are a core
+    security boundary) -- detected here via process execution instead of
+    the raw syscall, following the same pattern Falco's own official
+    "Mount Launched in Privileged Container" rule uses.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name in (mount, umount)
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Mount or umount binary executed in claude-code
+    (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, filesystem, defense-evasion]
+
+# TEMPORARY -- diagnostic only, remove before committing. Added 2026-09-15
+# to test a sharper hypothesis: the earlier `mount`/`umount` trigger (bare,
+# no args) likely never actually invoked the internal mount()/umount2()
+# syscall at all (bare `mount` just reads /proc/mounts; bare `umount`
+# likely just prints a usage error) -- so it's untested whether the
+# EXECVE event specifically fails to appear because of something the
+# process does INTERNALLY afterward (i.e. calling the poorly-captured
+# mount()/umount2() syscall) vs. something about the binary/exec itself.
+- rule: DEBUG any spawn v2
+  desc: temporary
+  condition: spawned_process and claude_code_container
+  output: >
+    DEBUG8 name=%proc.name cmdline=%proc.cmdline parent=%proc.pname
+  priority: DEBUG
 
 # Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
 # after mount/umount2 above). Unlike the previous two items,

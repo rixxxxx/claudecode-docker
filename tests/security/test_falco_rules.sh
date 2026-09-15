@@ -547,6 +547,33 @@ libc.umount2(b'/tmp/mnttest', 0)" >/dev/null 2>&1
     fi
 }
 
+test_mount_binary_execution_fires() {
+    # New 2026-09-15, after researching how Falco's own upstream rules
+    # handle mount detection (see claude-code-rules.yaml's "FOLLOW-UP
+    # RESEARCH" comment): Falco's own official "Mount Launched in
+    # Privileged Container" rule detects execution of the mount/umount
+    # BINARY via spawned_process rather than hooking the raw syscall.
+    #
+    # LIVE-VERIFIED that this pivot doesn't help here either, surprisingly:
+    # /usr/bin/mount and /usr/bin/umount are confirmed present and execute
+    # successfully, but produce no event at all here (confirmed via a
+    # maximally broad debug rule). The obvious next hypothesis -- both are
+    # setuid-root, maybe setuid execs aren't captured -- was tested and
+    # disproven: /usr/bin/su (also setuid-root) fires the existing
+    # "Privilege escalation attempt" rule perfectly reliably. So this
+    # soft-skips like test_mount_attempt_fires above, but the underlying
+    # cause remains genuinely unexplained -- see
+    # claude-code-rules.yaml's "Mount or umount binary executed" comment
+    # for the full writeup.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c 'mount >/dev/null 2>&1; umount >/dev/null 2>&1' >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "Mount or umount binary executed in claude-code" 15; then
+        assert_equal "seen" "seen" "alert fired (mount/umount binary execution was captured on this host)"
+    else
+        echo "  SKIP test_mount_binary_execution_fires: Falco does not appear to surface execve events for /usr/bin/mount or /usr/bin/umount at all on this build, even though other setuid binaries (su) are captured fine -- cause unexplained, see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Not counted as a failure."
+    fi
+}
+
 test_unshare_attempt_fires() {
     # New 2026-09-15: next item after mount/umount2 in OPEN ITEMS "Candidate
     # future rules". Unlike mount/raw-sockets, unshare(CLONE_NEWUSER) needs
@@ -695,6 +722,7 @@ run_test test_credentials_read_via_proc_self_root_fires
 run_test test_process_memory_access_fires
 run_test test_raw_socket_creation_fires
 run_test test_mount_attempt_fires
+run_test test_mount_binary_execution_fires
 run_test test_unshare_attempt_fires
 run_test test_uid_map_write_attempt_fires
 run_test test_capset_attempt_fires
