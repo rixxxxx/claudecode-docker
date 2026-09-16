@@ -12,6 +12,20 @@
 # are correct (see falco/falco.yaml's own verification note for the two
 # corrections found: rules_files plural, outputs.rate/max_burst removed).
 #
+# Switched 2026-09-15 from falcosecurity/falco-no-driver:latest to
+# falcosecurity/falco:latest-debian: `falco-no-driver` turned out to be a
+# retired image name -- falcosecurity/falco's own docker/README.md (commit
+# a2122621, 2024-10-30) describes the current falco-debian image as
+# "similar to the OLD falcosecurity/falco-no-driver image", i.e. no longer
+# updated. Confirmed live: `falco-no-driver:latest` still resolved to
+# Falco 0.39.2 (released 2024-11-21) as of this date, while 0.44.1 was the
+# latest real release -- explains why several syscalls (mount, umount2,
+# unshare, capset) weren't visible to rule evaluation in this repo's own
+# Falco rules despite matching upstream's own documented behavior for
+# newer versions (see falco/claude-code-rules.yaml OPEN ITEMS for the
+# investigation this uncovered). `falco:*-debian` is Debian-based with the
+# same apt-get availability this Dockerfile already depends on below.
+#
 # util-linux (for setpriv) is needed by falco-notify.sh: this container
 # runs as root (the one deliberate privileged exception in this repo, see
 # AGENTS.md), but the host's D-Bus session bus belongs to a specific
@@ -22,7 +36,7 @@
 # socket. falco-notify.sh uses setpriv to actually become HOST_UID before
 # calling notify-send, which is the only thing D-Bus will accept.
 
-FROM falcosecurity/falco-no-driver:latest
+FROM falcosecurity/falco:latest-debian
 
 # procps is for pgrep, used by this service's healthcheck in
 # docker-compose.yml (claude-code's depends_on waits on it).

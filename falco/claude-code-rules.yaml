@@ -211,72 +211,98 @@
 #
 # SECOND CONSOLIDATED FINDING, 2026-09-15, after closing four more items
 # below (mount, umount2, unshare, capset): none of their attempt-detector
-# rules could be live-fire-verified, and this was checked thoroughly, not
-# assumed -- a maximally broad throwaway debug rule (`condition:
-# claude_code_container and evt.type in (mount, umount2, unshare,
-# capset)`, deliberately no `evt.dir` filter so it catches enter events
-# too, no exclusion macros) produced ZERO log lines across all four
-# syscalls, triggered together in one process in the same test run. So
-# this isn't a masking bug, a wrong `evt.dir` direction, or an exclusion
-# macro accidentally matching -- Falco's driver on this build (0.39.2,
-# modern_ebpf, kernel 6.8.0-139-generic) appears to generate no evaluable
-# event at all for these four specific syscalls, regardless of direction
-# or outcome. This is a different failure mode than the raw-socket
-# rule's AF_INET half (where the underlying attack is also blocked, but
-# separately Falco doesn't surface it either) -- ptrace/process_vm_readv/
-# process_vm_writev remain the only rare/attempt-style syscalls in this
-# file confirmed captured live; every other one added this session
-# (socket failures, mount, umount2, unshare, capset, and the uid_map open
-# event) was not, despite the same rule-writing pattern. Plausible
-# explanation, not independently confirmed against Falco's own source:
-# modern_ebpf (a newer, leaner driver than the legacy kernel-module probe)
-# may simply not instrument every syscall Falco's rule language can
-# reference -- ptrace being common enough in security tooling to warrant
-# inclusion, while mount/umount2/unshare/capset are not. Each affected
-# rule below is kept as defense-in-depth regardless (all are still
-# correctly designed, and none of this affects hosts/driver versions
-# where these syscalls ARE captured) -- see each rule's own comment for
-# its specific soft-skip in tests/security/test_falco_rules.sh.
+# rules could be live-fire-verified at first -- a maximally broad
+# throwaway debug rule (`condition: claude_code_container and evt.type in
+# (mount, umount2, unshare, capset)`, no `evt.dir` filter, no exclusions)
+# produced ZERO log lines across all four syscalls on Falco 0.39.2
+# (modern_ebpf, kernel 6.8.0-139-generic). Extensive follow-up research
+# (comparing against Falco's own upstream rules, testing setuid-exec-in-
+# general via `su` as a control, raising Falco's own log_level to debug,
+# checking AppArmor/seccomp) ruled out every plausible userspace-visible
+# cause -- see git history for the full writeup that used to live here.
 #
-# FOLLOW-UP RESEARCH, 2026-09-15: checked Falco's own public rules
+# RESOLVED 2026-09-15: it was a version-specific Falco gap after all, not
+# a permanent driver limitation. The security-monitor base image had been
+# stuck on Falco 0.39.2 since ~Nov 2024 -- Dockerfile.security-monitor
+# referenced `falcosecurity/falco-no-driver:latest`, which turned out to
+# be a RETIRED image name (falcosecurity/falco's own docker/README.md,
+# commit a2122621 2024-10-30, describes the current falco-debian image as
+# "similar to the OLD falcosecurity/falco-no-driver image") that stopped
+# receiving updates, so `:latest` never actually advanced. Switching to
+# `falcosecurity/falco:latest-debian` (0.44.1 as of this date) made
+# mount/umount2/unshare/capset ALL fire correctly on the first live test
+# after the upgrade, no rule changes needed for the capture gap itself.
+# Root cause within Falco was never pinned down precisely (plausibly
+# related to the "drop syscall enter events" work tracked in
+# falcosecurity/libs#2427/#2588/#2607, given 0.44.1's startup log
+# explicitly warns `evt.dir = <` is now meaningless "due to the drop of
+# enter events" -- consistent with mount/umount2/unshare/capset's exit
+# events possibly not having been fully backfilled with enter-event
+# parameters yet on 0.39.2) -- not confirmed against Falco's source, and
+# no longer worth chasing now that upgrading fixed it outright.
+#
+# The version jump surfaced three real regressions of its own:
+#   1. `runc` calls capset() internally on every `docker compose exec`
+#      (not just container start), which the "Capset attempt in
+#      claude-code" rule below now excludes via
+#      `proc.name startswith "runc:"`. Fixed same-day.
+#   2. Falco's bundled ruleset gained its own "PTRACE attached to process"
+#      rule (covers PTRACE_ATTACH/SEIZE/POKETEXT/POKEDATA/SETREGS
+#      specifically) between 0.39.2 and 0.44.1, which now wins the
+#      first-match race for those specific ptrace requests -- "Process
+#      memory access attempt in claude-code" below still adds value for
+#      the ptrace requests that rule doesn't cover (PTRACE_PEEKTEXT/
+#      PEEKDATA, the actual memory-*read* requests used for pure
+#      credential exfiltration) plus process_vm_readv/process_vm_writev
+#      entirely; see that rule's own comment and its test's trigger
+#      choice. Fixed same-day by changing the test's trigger, not the
+#      rule.
+#   3. NOT fixed, still open, but ROOT-CAUSED: successful execve of ANY
+#      setuid-transitioning binary produces no event at all on 0.44.1 --
+#      confirmed generally, not just for mount/umount/su, via a fourth
+#      unrelated setuid-root binary (`chsh`) reproducing the identical
+#      silence. Traced to falcosecurity/libs#2726 (merged 2025-12-04),
+#      which moved *successful* execve/execveat capture to the kernel's
+#      `sched_process_exec` tracepoint while failing calls still use the
+#      older syscall-exit fillers -- apparently the new tracepoint path
+#      doesn't generate an event when the successful exec also completes
+#      a setuid credential transition. This is a different, newly-
+#      discovered gap from the 0.39.2 one (which this upgrade otherwise
+#      fixed) -- see "Mount or umount binary executed in claude-code"
+#      below for the full writeup, the ruled-out alternatives (container-
+#      plugin interference), and current soft-skip status.
+#
+# FOLLOW-UP RESEARCH, 2026-09-15 (kept for context, largely superseded by
+# the resolution above): checked Falco's own public rules
 # (falcosecurity/rules repo, both falco_rules.yaml -- the default bundle
 # this project actually loads -- and falco-incubating_rules.yaml, a
 # separate community set this project does NOT load) to see how Falco's
 # own team handles these four syscalls. Findings:
 #   - Neither file hooks the raw `mount`, `umount2`, or `capset` syscall
 #     at all, anywhere. `capset` in particular has no official rule
-#     anywhere upstream either -- this OPEN ITEM was genuinely undesigned
-#     territory, not just in this file.
+#     anywhere upstream either.
 #   - Falco's OWN official rule for mount ("Mount Launched in Privileged
 #     Container", incubating) deliberately avoids the raw syscall:
 #     `spawned_process and container and container.privileged=true and
 #     proc.name=mount and ...` -- detecting EXECUTION of the mount binary,
 #     not the mount() syscall. Independent, external validation of the
 #     exact pivot this project made for memfd_create/execveat (detect the
-#     reliable execve event, not the rare syscall) -- see the new
+#     reliable execve event, not the rare syscall) -- see the
 #     "Mount or umount binary executed in claude-code" rule below, added
-#     to mirror this official pattern. LIVE-VERIFIED, however, that this
-#     pivot does NOT resolve the gap for mount/umount specifically: their
-#     execve events aren't captured either (confirmed via a maximally
-#     broad debug rule), and setuid-exec-in-general was tested and
-#     disproven as the cause (`su`, also setuid-root, fires its rule
-#     perfectly reliably) -- see that new rule's own comment for the full
-#     writeup. Whatever's special about mount/umount remains unexplained;
-#     it is apparently not rarity, not capability requirements, and not
-#     setuid status.
+#     to mirror this official pattern. This complements (not replaces)
+#     the syscall-level rule, since the two rules cover different attack
+#     surfaces (CLI tool usage vs. a raw mount()/umount2() call from
+#     custom code) -- the syscall-level rule fires correctly post-upgrade,
+#     but this one still doesn't (regression 3 above) -- see its own
+#     comment.
 #   - `unshare` DOES have one official rule, "Change namespace privileges
 #     via unshare" (incubating only): `evt.type=unshare and container and
 #     not thread.cap_permitted contains CAP_SYS_ADMIN` -- notably NO
-#     evt.dir filter at all, and using the `thread.cap_permitted` field
-#     (a real, documented capability-set field) instead of raw arg
-#     decoding. This doesn't resolve our own gap, though: the debug rule
-#     used for the consolidated finding above ALSO had no evt.dir filter
-#     and still caught nothing for `unshare` on this build -- so the
-#     silence here looks like a build/version-specific gap (Falco 0.39.2,
-#     modern_ebpf, kernel 6.8.0-139-generic) rather than a syntax mistake,
-#     but this is still not confirmed against Falco's own issue tracker or
-#     source, just made more plausible by ruling out our own condition
-#     syntax as the cause.
+#     evt.dir filter at all (matches the 0.44.1 "enter events dropped"
+#     change above), and using the `thread.cap_permitted` field (a real,
+#     documented capability-set field) instead of raw arg decoding --
+#     worth adopting if this rule ever needs the specific capability
+#     value rather than just detecting the call.
 #   - DONE 2026-09-14: ptrace / process_vm_readv / process_vm_writev -- see
 #     "Process memory access attempt in claude-code" rule below and its
 #     own comment for the live-verification writeup (ptrace confirmed
@@ -308,19 +334,21 @@
 #     claude-code" rule below (near the raw-socket rule) and its own
 #     comment for the full writeup. claude-code lacks CAP_SYS_ADMIN
 #     entirely (not in Docker's default capability set at all) -- live-
-#     confirmed (not just predicted from capability math this time):
-#     both `mount()` and `umount2()` return real EPERM (errno 1) here.
-#     Written from the start as a pure attempt-detector (like the ptrace
-#     rule), applying the capability lesson from the raw-socket item up
-#     front instead of discovering it via live-testing afterward.
-#     Live-verified that Falco does NOT surface this failing syscall to
-#     rule evaluation on this build either (same as the raw-socket rule's
-#     AF_INET half) -- kept as defense-in-depth, not an open bug.
-#     Complemented with "Mount or umount binary executed in claude-code"
+#     confirmed both `mount()` and `umount2()` return real EPERM (errno 1)
+#     here, so this is a pure attempt-detector (like the ptrace rule), not
+#     a preventable-attack rule. Initially found silent on Falco 0.39.2;
+#     RESOLVED by the Falco 0.39.2 -> 0.44.1 upgrade documented in the
+#     SECOND CONSOLIDATED FINDING above -- fires correctly now. Also
+#     complemented with "Mount or umount binary executed in claude-code"
 #     (also below), detecting the mount/umount CLI tools via
-#     spawned_process instead -- mirrors Falco's own official rule design
-#     for this exact scenario, confirmed live and working (see FOLLOW-UP
-#     RESEARCH above).
+#     spawned_process -- mirrors Falco's own official rule design for this
+#     exact scenario (see FOLLOW-UP RESEARCH above). Unlike the syscall-
+#     level rule, this one is STILL silent post-upgrade (correction logged
+#     in its own comment) -- root-caused to falcosecurity/libs#2726 (any
+#     successful setuid-transitioning execve, confirmed general via
+#     mount/umount/su/chsh, not captured via Falco's new
+#     `sched_process_exec`-based path), not the same gap 0.39.2 had.
+#     Remains a soft-skip in tests/security/test_falco_rules.sh.
 #   - DONE 2026-09-15: unshare(CLONE_NEWUSER) + writes to
 #     /proc/self/uid_map / /proc/self/setgroups -- see "Unshare attempt in
 #     claude-code" and "Write attempt to uid_map or setgroups in
@@ -333,22 +361,20 @@
 #     default profile, which claude-code lacks), not the classic
 #     unprivileged_userns_clone sysctl (confirmed still enabled) or
 #     AppArmor (no denial logged). Already closed by Docker's defaults,
-#     independent of anything this project configures. Falco does not
-#     surface either half live (the failing unshare() attempt, or the
-#     /proc/self/uid_map write attempt -- the latter live-confirmed via a
-#     maximally broad throwaway debug rule too, not just the specific
-#     one) -- both rules soft-skip in tests/security/test_falco_rules.sh,
-#     same treatment as the mount/raw-socket gaps.
+#     independent of anything this project configures -- both rules are
+#     defense-in-depth for other configurations. Initially found silent on
+#     Falco 0.39.2 (both the unshare() attempt and the uid_map write
+#     attempt); RESOLVED by the same 0.44.1 upgrade -- both fire correctly
+#     now.
 #   - DONE 2026-09-15: capset -- see "Capset attempt in claude-code" rule
 #     below (near the uid_map rule) for the full writeup. CAP_SETPCAP is
 #     one of Docker's default capabilities but, like CAP_NET_RAW, sits
 #     unused in claude-code's bounding set only (CapEff/CapPrm both
 #     empty) -- any capset() call trying to add a capability is expected
-#     to fail with EPERM. Whether Falco captures the attempt live is part
-#     of the planned follow-up deep-dive into why ptrace is so far the
-#     only rare-syscall attempt rule in this file confirmed captured live
-#     (mount, umount2, unshare all were not) -- not separately resolved
-#     yet at write time.
+#     to fail with EPERM. Initially found silent on Falco 0.39.2; RESOLVED
+#     by the 0.44.1 upgrade -- fires correctly now (after excluding runc's
+#     own internal capset() calls, a real false positive the upgrade
+#     surfaced -- see the rule's own comment).
 #   - DONE 2026-09-15, but not by adding a rule -- already covered.
 #     memfd_create + execveat (fileless execution) turned out to be the
 #     first item in this whole "Candidate future rules" list where the
@@ -1280,20 +1306,19 @@
 # the raw-socket rule ran into) -- this rule's value is in detecting the
 # attempt, not in assuming it could succeed.
 #
-# LIVE-VERIFIED 2026-09-15: both predictions confirmed on a real
-# Docker/eBPF host. (1) Capability prediction: a single process printed
-# errno right after each syscall -- `mount()` and `umount2()` both
-# returned `ret=-1 errno=1 (Operation not permitted)`, exactly the
-# CAP_SYS_ADMIN-absent EPERM predicted above, no guessing needed this
-# time. (2) Falco-visibility prediction: as with the raw-socket rule's
-# AF_INET half, Falco does NOT surface this failing syscall to rule
-# evaluation on this build -- tests/security/test_falco_rules.sh's
-# test_mount_attempt_fires soft-skips (23/23 tests still passing overall).
-# So of the two possible precedents (ptrace-while-failing was captured;
-# socket()-while-failing was not), mount/umount2 follows the socket()
-# precedent. Rule kept as defense-in-depth per the same reasoning as the
-# raw-socket rule -- not an open bug, just untestable in this specific
-# container/driver combination.
+# LIVE-VERIFIED 2026-09-15: the capability prediction was confirmed on a
+# real Docker/eBPF host -- a single process printed errno right after each
+# syscall, `mount()` and `umount2()` both returned
+# `ret=-1 errno=1 (Operation not permitted)`, exactly the
+# CAP_SYS_ADMIN-absent EPERM predicted above. Falco visibility was
+# initially the opposite of expected, though: on Falco 0.39.2 this failing
+# syscall wasn't surfaced to rule evaluation at all (confirmed via a
+# maximally broad debug rule, not just this specific test). RESOLVED by
+# upgrading security-monitor's base image to Falco 0.44.1 (see the SECOND
+# CONSOLIDATED FINDING near the top of this file's OPEN ITEMS block for
+# the full writeup) -- this rule now fires correctly and
+# tests/security/test_falco_rules.sh's test_mount_attempt_fires is a hard
+# assertion, not a soft-skip.
 - rule: Mount or unmount attempt in claude-code
   desc: >
     A process inside claude-code attempted to mount or unmount a
@@ -1329,28 +1354,62 @@
 # validation of the same pivot this project made for memfd_create/
 # execveat (detect the process, not the rare syscall).
 #
-# LIVE-VERIFIED 2026-09-15 that this pivot does NOT resolve the gap here,
-# though -- surprisingly. /usr/bin/mount and /usr/bin/umount are confirmed
-# present and confirmed to execute successfully (real mount-table output,
-# exit 0), but no event of any kind (not even from a maximally broad
-# throwaway debug rule matching every spawned_process with zero filters)
-# was produced for either. Before accepting this, the obvious alternative
-# hypothesis -- both binaries are setuid-root (`-rwsr-xr-x root root`,
-# confirmed via `ls -la`), maybe setuid exec transitions aren't captured
-# on this build -- was tested and DISPROVEN: `/usr/bin/su` (also
-# confirmed setuid-root, `find / -perm -4000`) fires the existing
-# "Privilege escalation attempt" rule perfectly reliably. (Note: the
-# test for that rule uses non-setuid dummy script stand-ins for sudo/su/
-# pkexec/doas since none are installed by default -- this `su --help`
-# check was the first real setuid-binary exec actually verified live in
-# this file.) So this isn't a general "setuid execs are invisible" gap
-# either -- whatever's happening is specific to mount/umount themselves
-# (both the raw syscall AND now the binary's own execve), not to
-# capability requirements, rarity, or setuid status in general. Not
-# root-caused further. Rule kept as defense-in-depth (correct on paper,
-# matches Falco's own official design) but soft-skips in
-# tests/security/test_falco_rules.sh, like its syscall-level sibling
-# above.
+# LIVE-VERIFIED 2026-09-15 that this pivot did NOT resolve the gap on
+# Falco 0.39.2, surprisingly -- /usr/bin/mount and /usr/bin/umount
+# executed successfully (real mount-table output, exit 0) but produced no
+# event of any kind, not even from a maximally broad debug rule matching
+# every spawned_process with zero filters. The obvious alternative
+# hypothesis -- both binaries are setuid-root, maybe setuid exec
+# transitions aren't captured on this build -- was tested and DISPROVEN:
+# `/usr/bin/su` (also setuid-root) fired the existing "Privilege
+# escalation attempt" rule perfectly reliably in the same session. So this
+# wasn't a general "setuid execs are invisible" gap either.
+#
+# CORRECTION 2026-09-15: initially (wrongly) marked resolved by the Falco
+# 0.39.2 -> 0.44.1 upgrade, by analogy with the syscall-level sibling rule
+# above (which the upgrade DID fix). Re-tested properly and it's still
+# broken on 0.44.1 -- and the "setuid disproven" control from the
+# paragraph above no longer holds on this version either: `su --help`
+# (both direct `docker compose exec claude-code su --help` and
+# `sh -c 'su --help'`) now ALSO produces no event for its own execve, only
+# for the `sh -c ...` wrapper process when one is used -- the same
+# `Privilege escalation attempt` rule that fired reliably for `su` on
+# 0.39.2 does not fire for it on 0.44.1.
+#
+# ROOT-CAUSED (with real confidence this time, not just "unexplained"):
+# confirmed this is a general SETUID-EXECVE gap, not specific to
+# mount/umount/su -- a fourth, unrelated setuid-root binary (`chsh`,
+# neither mount/umount/su-adjacent nor previously tested) reproduces the
+# exact same silence, while every non-setuid execve tested throughout this
+# whole session (python3, bash, sh, node, rtk, dash, etc.) is captured
+# fine. Traced to a specific, real Falco architecture change:
+# falcosecurity/libs#2726 ("default to `sched_process_exec` tracepoint on
+# all architectures", merged 2025-12-04) switched how *successful*
+# execve/execveat events are generated -- via the kernel's
+# `sched_process_exec` tracepoint -- while *failing* calls still use the
+# older dedicated syscall-exit fillers. This exactly matches every result
+# in this file: mount()/umount2()/unshare()/capset() as raw syscalls all
+# FAIL here (confirmed via direct errno checks) and go through the
+# still-working failing-call path (all fire correctly); mount/umount/su/
+# chsh as BINARIES all SUCCEED at execve (regardless of what they do
+# internally) and go through the new sched_process_exec path -- which
+# apparently doesn't generate an event when that successful exec also
+# completes a setuid credential transition. Not confirmed against Falco's
+# own issue tracker (no existing report found for this exact combination)
+# -- worth filing upstream against falcosecurity/libs#2726 with the
+# `chsh`/`su` repro above. Also does not affect ptrace's own test since
+# PID-1 ptrace is a failing call, same reasoning.
+#
+# Ruled out separately: container-plugin interference (a maximally broad
+# debug rule scoped by `user.name = claudecode` alone, with NO
+# `container.id` check at all, still caught nothing for su/mount/chsh) --
+# this is not about container enrichment, the raw event genuinely isn't
+# generated. Raising Falco's own `log_level` to `debug` produced no
+# additional diagnostic output either, on both 0.39.2 and 0.44.1.
+#
+# tests/security/test_falco_rules.sh's test_mount_binary_execution_fires
+# and test_privilege_escalation_attempt's `su` case are soft-skips
+# pending an upstream fix -- see their own comments.
 - rule: Mount or umount binary executed in claude-code
   desc: >
     The mount or umount command-line utility was executed inside
@@ -1369,21 +1428,6 @@
     (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, filesystem, defense-evasion]
-
-# TEMPORARY -- diagnostic only, remove before committing. Added 2026-09-15
-# to test a sharper hypothesis: the earlier `mount`/`umount` trigger (bare,
-# no args) likely never actually invoked the internal mount()/umount2()
-# syscall at all (bare `mount` just reads /proc/mounts; bare `umount`
-# likely just prints a usage error) -- so it's untested whether the
-# EXECVE event specifically fails to appear because of something the
-# process does INTERNALLY afterward (i.e. calling the poorly-captured
-# mount()/umount2() syscall) vs. something about the binary/exec itself.
-- rule: DEBUG any spawn v2
-  desc: temporary
-  condition: spawned_process and claude_code_container
-  output: >
-    DEBUG8 name=%proc.name cmdline=%proc.cmdline parent=%proc.pname
-  priority: DEBUG
 
 # Added 2026-09-15 (see OPEN ITEMS "Candidate future rules" -- next item
 # after mount/umount2 above). Unlike the previous two items,
@@ -1415,6 +1459,11 @@
 # configures. This rule is defense-in-depth for configurations that
 # might disable/replace the default seccomp profile, not a closed gap
 # today.
+#
+# Initially found silent on Falco 0.39.2 despite the above (same "rare
+# syscall not captured" gap as mount/umount2/capset) -- RESOLVED by the
+# 0.39.2 -> 0.44.1 upgrade documented in the SECOND CONSOLIDATED FINDING
+# near the top of this file's OPEN ITEMS block. Fires correctly now.
 #
 # Condition deliberately does NOT try to match the `clone` syscall or any
 # CLONE_NEWUSER flag value: `clone()` is extremely common (every
@@ -1459,21 +1508,22 @@
 # expected to work the same way here since both are "open with
 # write-intent flags against a specific path" detections.
 #
-# LIVE-VERIFIED 2026-09-15 that it does NOT, however: `echo "0 1000 1" >
-# /proc/self/uid_map` produced a real, distinct failure (shell reported
-# "I/O error", i.e. EIO -- not EPERM/EINVAL as guessed) but neither this
-# rule nor even a maximally broad throwaway debug rule matching ANY
-# open/openat/openat2 exit event in the container caught anything at all
-# for it -- no event, not a masked one. Unlike the Squid override path
-# (a real file on a read-only bind mount), /proc/*/uid_map is a synthetic,
-# kernel-generated file with its own open/write handlers
-# (proc_uid_map_operations, not the regular VFS path) -- plausibly why it
-# doesn't produce a normal, rule-visible open exit event on this Falco
-# build. This is now the fourth distinct "Falco doesn't surface this
-# specific failing/unusual operation" gap found in this session (sockets,
-# mount/umount2, unshare, now this) -- a recurring characteristic of this
-# Falco/driver combination rather than a one-off. Kept as defense-in-depth
-# per the same reasoning as those rules, not an open bug to keep chasing.
+# LIVE-VERIFIED 2026-09-15 that it did NOT fire on Falco 0.39.2, however:
+# `echo "0 1000 1" > /proc/self/uid_map` produced a real, distinct failure
+# (shell reported "I/O error", i.e. EIO -- not EPERM/EINVAL as guessed)
+# but neither this rule nor even a maximally broad throwaway debug rule
+# matching ANY open/openat/openat2 exit event in the container caught
+# anything at all for it. Unlike the Squid override path (a real file on
+# a read-only bind mount), /proc/*/uid_map is a synthetic, kernel-generated
+# file with its own open/write handlers (proc_uid_map_operations, not the
+# regular VFS path) -- plausibly related to whatever the underlying gap
+# was.
+#
+# RESOLVED 2026-09-15 by the Falco 0.39.2 -> 0.44.1 upgrade (see SECOND
+# CONSOLIDATED FINDING near the top of this file's OPEN ITEMS block) --
+# this rule now fires correctly, same as its unshare sibling above;
+# tests/security/test_falco_rules.sh's test_uid_map_write_attempt_fires is
+# a hard assertion again, not a soft-skip.
 - rule: Write attempt to uid_map or setgroups in claude-code
   desc: >
     A process inside claude-code attempted to write to its own
@@ -1512,24 +1562,40 @@
 # revisiting.
 #
 # Written as a pure attempt-detector (matches ptrace/mount/unshare
-# above), reusing plain %evt.args rather than named fields. Given the
-# pattern from every other rare-syscall attempt rule added this session
-# (mount, umount2, unshare all failed to be captured by Falco live,
-# ptrace being the sole exception) do NOT assume this one will fire
-# either without checking -- see OPEN ITEMS for the planned follow-up
-# "deep analysis" of whether this is a fixable condition issue or a
-# genuine, consistent driver limitation across all of them.
+# above), reusing plain %evt.args rather than named fields.
+#
+# RESOLVED 2026-09-15: the "genuine driver limitation" this comment
+# originally worried about (mount, umount2, unshare, capset all silent on
+# Falco 0.39.2, only ptrace captured) turned out to be a version-specific
+# gap, not a fundamental one -- see the "FOLLOW-UP RESEARCH" note near the
+# top of this OPEN ITEMS block. Upgrading the security-monitor base image
+# from the retired falcosecurity/falco-no-driver:latest (stuck on 0.39.2
+# since ~Nov 2024) to falcosecurity/falco:latest-debian (0.44.1 as of this
+# date) made ALL FOUR fire correctly on the very first live test.
+#
+# That same upgrade immediately surfaced a real false positive here,
+# though: `runc` itself calls capset() internally as part of its own
+# container-lifecycle process setup (confirmed live --
+# `command=runc:[1:CHILD] init`) -- and does so on EVERY `docker compose
+# exec` into the container, not just at container start, since each exec
+# spawns a fresh runc child. Excluded via `proc.name startswith "runc:"`
+# (runc labels these internal re-exec stages "runc:[0:PARENT]",
+# "runc:[1:CHILD]", "runc:[2:INIT]", etc. -- matching the prefix covers
+# all of them without needing the exact stage label).
 - rule: Capset attempt in claude-code
   desc: >
     A process inside claude-code called capset() -- attempting to modify
     its own capability sets. A UID-1000 process with empty
     effective/permitted capability sets has no legitimate reason to ever
     call this (it can only fail or no-op); a real attempt is a strong
-    privilege-escalation signal regardless of outcome.
+    privilege-escalation signal regardless of outcome. Excludes runc's own
+    internal capset() calls during container/exec setup (see comment
+    above), which are normal container-runtime activity, not an attack.
   condition: >
     claude_code_container
     and evt.dir = <
     and evt.type = capset
+    and not proc.name startswith "runc:"
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Capset attempt in claude-code

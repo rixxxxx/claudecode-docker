@@ -29,6 +29,30 @@
 #     buffer" (confirmed via bpftool: ringbuf maps did get created,
 #     matching cpus_for_each_buffer) but then never processed a single
 #     event afterwards, with no error printed either.
+#
+# Updated 2026-09-15 for the jump from Falco 0.39.2 to 0.44.1 (base image
+# switched from the retired falcosecurity/falco-no-driver to
+# falcosecurity/falco:latest-debian, see Dockerfile.security-monitor's own
+# comment). Three more breaking changes hit, two on first boot and one on
+# a second pass after fixing the first:
+#   - the `grpc:` key (previously below, `enabled: false`) no longer
+#     exists in the config schema at all -- removed entirely rather than
+#     guessing a replacement.
+#   - `grpc_output:` (previously below, `enabled: false`) turned out to
+#     ALSO no longer exist -- Falco's schema validator only reported one
+#     invalid key at a time, so this one only surfaced after removing
+#     `grpc:` and reloading. Confirmed against the current
+#     falcosecurity/falco master falco.yaml, which has no `grpc*` keys of
+#     any kind -- removed entirely too.
+#   - container enrichment (container.id/container.name/etc., which nearly
+#     every rule in claude-code-rules.yaml depends on via the
+#     claude_code_container macro) moved out of Falco's core into a
+#     separate `container` plugin at some point between 0.39 and 0.44 --
+#     Falco now hard-fails at startup ("Plugin requirement not satisfied,
+#     must load one of: container (>= 0.4.0)") unless it's explicitly
+#     loaded. Added `load_plugins`/`plugins` below matching the current
+#     upstream example config exactly (library_path: libcontainer.so,
+#     shipped in the falco:latest-debian image).
 
 rules_files:
   - /etc/falco/falco_rules.yaml
@@ -72,8 +96,11 @@ program_output:
 http_output:
   enabled: false
 
-grpc:
-  enabled: false
+load_plugins: [container]
 
-grpc_output:
-  enabled: false
+plugins:
+  - name: container
+    library_path: libcontainer.so
+    init_config:
+      label_max_len: 100
+      with_size: false

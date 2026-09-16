@@ -329,9 +329,30 @@ test_privilege_escalation_attempt() {
     for bin in sudo su pkexec doas; do
         local checkpoint; checkpoint="$(log_line_count)"
         if "${COMPOSE[@]}" exec -T claude-code sh -c "command -v $bin" >/dev/null 2>&1; then
-            # Real binary present on this image -- use a harmless,
-            # non-interactive invocation to avoid a password-prompt hang.
+            # Real binary present on this image (currently only `su`) --
+            # use a harmless, non-interactive invocation to avoid a
+            # password-prompt hang.
+            #
+            # Soft-skips instead of hard-failing as of the Falco 0.44.1
+            # upgrade (2026-09-15): `su`'s own execve is no longer
+            # captured at all on this build (neither direct-exec nor
+            # `sh -c` forms). Root-caused, not just observed: any
+            # SUCCESSFUL setuid-transitioning execve is affected (confirmed
+            # general via a fourth, unrelated setuid binary `chsh`, same
+            # silence) -- traced to falcosecurity/libs#2726, which moved
+            # successful execve/execveat capture to the kernel's
+            # `sched_process_exec` tracepoint (failing calls still use the
+            # old path, which is why raw syscall attempts elsewhere in
+            # this file keep working). See "Mount or umount binary
+            # executed in claude-code"'s comment in claude-code-rules.yaml
+            # for the full writeup. This used to be a reliable hard
+            # assertion on Falco 0.39.2.
             "${COMPOSE[@]}" exec -T claude-code "$bin" --help >/dev/null 2>&1 || true
+            if wait_for_log "$checkpoint" "Privilege escalation attempt in claude-code" 15; then
+                assert_equal "seen" "seen" "alert fired ($bin attempt was captured on this host)"
+            else
+                echo "  SKIP test_privilege_escalation_attempt ($bin): Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture) -- same regression as the mount/umount binary rule. Not counted as a failure."
+            fi
         else
             "${COMPOSE[@]}" exec -T claude-code sh -c "
                 mkdir -p ~/.local/bin
@@ -340,8 +361,8 @@ test_privilege_escalation_attempt() {
                 $bin
                 rm -f ~/.local/bin/$bin
             "
+            assert_alert_seen "$checkpoint" "Privilege escalation attempt in claude-code" 15
         fi
-        assert_alert_seen "$checkpoint" "Privilege escalation attempt in claude-code" 15
     done
 }
 
@@ -467,14 +488,25 @@ test_process_memory_access_fires() {
     # "Candidate future rules" -- ptrace/process_vm_readv/process_vm_writev
     # bypass every file-based credential rule above, since they read the
     # target process's decrypted memory directly instead of opening the
-    # credentials file. PTRACE_ATTACH=16 against PID 1 (harmless target --
-    # expected to fail with EPERM, irrelevant; the syscall attempt itself
-    # is what the rule watches for, confirmed live via a throwaway DEBUG
-    # rule during design that Falco captures the event regardless of
-    # whether ptrace itself succeeds).
+    # credentials file. The syscall attempt itself is what the rule
+    # watches for, regardless of success (PID 1 as target is expected to
+    # fail with EPERM, irrelevant).
+    #
+    # Trigger changed 2026-09-15 after upgrading security-monitor's Falco
+    # from 0.39.2 to 0.44.1: that upgrade added Falco's OWN bundled
+    # "PTRACE attached to process" rule, which covers
+    # PTRACE_ATTACH/SEIZE/POKETEXT/POKEDATA/SETREGS specifically and now
+    # wins the first-match race for those requests (PTRACE_ATTACH=16, the
+    # value this test used to send, is one of them). Switched to
+    # PTRACE_PEEKTEXT=1 -- a memory-*read* request, the actual credential-
+    # exfiltration primitive this rule exists for -- which the bundled
+    # rule does NOT cover, so this test now genuinely exercises this
+    # rule's own remaining unique value instead of being masked. See
+    # claude-code-rules.yaml's "SECOND CONSOLIDATED FINDING" and this
+    # rule's own comment for the full writeup.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code python3 -c \
-        "import ctypes; ctypes.CDLL('libc.so.6').ptrace(16, 1, 0, 0)" >/dev/null 2>&1
+        "import ctypes; ctypes.CDLL('libc.so.6').ptrace(1, 1, 0, 0)" >/dev/null 2>&1
     assert_alert_seen "$checkpoint" "Process memory access attempt in claude-code" 15
 }
 
@@ -525,14 +557,14 @@ test_mount_attempt_fires() {
     # merely present-but-unusable like CAP_NET_RAW was for the raw-socket
     # case -- it's simply absent from Docker's default capability set); this
     # rule is a pure attempt-detector by design (see
-    # claude-code-rules.yaml's "Mount or unmount attempt" comment).
+    # claude-code-rules.yaml's "Mount or unmount attempt" comment). A direct
+    # errno check confirmed both mount() and umount2() return real EPERM
+    # here.
     #
-    # LIVE-VERIFIED (not just predicted): a direct errno check (separate
-    # from this test, see that rule's comment) confirmed both mount() and
-    # umount2() return real EPERM here. Falco does NOT surface this failing
-    # syscall to rule evaluation on this build though (confirmed via this
-    # test soft-skipping) -- same class of gap as
-    # test_raw_socket_creation_fires's AF_INET half.
+    # Was a soft-skip on Falco 0.39.2 (which didn't surface this failing
+    # syscall to rule evaluation at all); RESOLVED by the 0.39.2 -> 0.44.1
+    # upgrade (see claude-code-rules.yaml's SECOND CONSOLIDATED FINDING) --
+    # hard assertion again.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code python3 -c \
         "import ctypes, os
@@ -540,11 +572,7 @@ os.makedirs('/tmp/mnttest', exist_ok=True)
 libc = ctypes.CDLL('libc.so.6', use_errno=True)
 libc.mount(b'none', b'/tmp/mnttest', b'tmpfs', 0, None)
 libc.umount2(b'/tmp/mnttest', 0)" >/dev/null 2>&1
-    if wait_for_log "$checkpoint" "Mount or unmount attempt in claude-code" 15; then
-        assert_equal "seen" "seen" "alert fired (mount/umount2 attempt was captured on this host)"
-    else
-        echo "  SKIP test_mount_attempt_fires: Falco does not appear to surface a failing mount/umount2 syscall to rule evaluation on this build (mount/umount2 genuinely fail here -- claude-code has no CAP_SYS_ADMIN -- but the attempt itself wasn't captured, same class of gap as the raw-socket rule's AF_INET half). Not counted as a failure."
-    fi
+    assert_alert_seen "$checkpoint" "Mount or unmount attempt in claude-code" 15
 }
 
 test_mount_binary_execution_fires() {
@@ -554,46 +582,47 @@ test_mount_binary_execution_fires() {
     # Privileged Container" rule detects execution of the mount/umount
     # BINARY via spawned_process rather than hooking the raw syscall.
     #
-    # LIVE-VERIFIED that this pivot doesn't help here either, surprisingly:
-    # /usr/bin/mount and /usr/bin/umount are confirmed present and execute
-    # successfully, but produce no event at all here (confirmed via a
-    # maximally broad debug rule). The obvious next hypothesis -- both are
-    # setuid-root, maybe setuid execs aren't captured -- was tested and
-    # disproven: /usr/bin/su (also setuid-root) fires the existing
-    # "Privilege escalation attempt" rule perfectly reliably. So this
-    # soft-skips like test_mount_attempt_fires above, but the underlying
-    # cause remains genuinely unexplained -- see
-    # claude-code-rules.yaml's "Mount or umount binary executed" comment
-    # for the full writeup.
+    # Was a soft-skip on Falco 0.39.2. Briefly assumed fixed by the 0.39.2
+    # -> 0.44.1 upgrade (by analogy with the syscall-level sibling rule,
+    # which the upgrade DID fix) -- CORRECTED after actually re-testing:
+    # still silent on 0.44.1. Root-caused (not just observed) to
+    # falcosecurity/libs#2726: successful execve/execveat capture moved to
+    # the kernel's `sched_process_exec` tracepoint, which doesn't generate
+    # an event when the successful exec also completes a setuid credential
+    # transition -- confirmed general (not mount/umount-specific) via `su`
+    # and a fourth, unrelated setuid binary `chsh` reproducing the exact
+    # same silence. See claude-code-rules.yaml's "Mount or umount binary
+    # executed" comment for the full writeup. Back to soft-skip pending an
+    # upstream fix.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code sh -c 'mount >/dev/null 2>&1; umount >/dev/null 2>&1' >/dev/null 2>&1
     if wait_for_log "$checkpoint" "Mount or umount binary executed in claude-code" 15; then
         assert_equal "seen" "seen" "alert fired (mount/umount binary execution was captured on this host)"
     else
-        echo "  SKIP test_mount_binary_execution_fires: Falco does not appear to surface execve events for /usr/bin/mount or /usr/bin/umount at all on this build, even though other setuid binaries (su) are captured fine -- cause unexplained, see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Not counted as a failure."
+        echo "  SKIP test_mount_binary_execution_fires: Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture, confirmed general via su/chsh too, not mount/umount-specific) -- see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Not counted as a failure."
     fi
 }
 
 test_unshare_attempt_fires() {
     # New 2026-09-15: next item after mount/umount2 in OPEN ITEMS "Candidate
     # future rules". Unlike mount/raw-sockets, unshare(CLONE_NEWUSER) needs
-    # no capability at all (unprivileged by design) -- LIVE-VERIFIED (not
-    # predicted) via a controlled A/B test that Docker's own default seccomp
-    # profile blocks it here regardless (CLONE_NEWUSER requires
-    # CAP_SYS_ADMIN under Docker's default profile; the classic
-    # unprivileged_userns_clone sysctl and AppArmor were both checked and
-    # ruled out as the cause). So this call is expected to fail with EPERM
-    # here, same as ptrace/mount -- this rule is a pure attempt-detector by
-    # design (see claude-code-rules.yaml's "Unshare attempt" comment).
+    # no capability at all (unprivileged by design) -- LIVE-VERIFIED via a
+    # controlled A/B test that Docker's own default seccomp profile blocks
+    # it here regardless (CLONE_NEWUSER requires CAP_SYS_ADMIN under
+    # Docker's default profile; the classic unprivileged_userns_clone
+    # sysctl and AppArmor were both checked and ruled out as the cause). So
+    # this call is expected to fail with EPERM here, same as ptrace/mount
+    # -- this rule is a pure attempt-detector by design (see
+    # claude-code-rules.yaml's "Unshare attempt" comment).
+    #
+    # Was a soft-skip on Falco 0.39.2; RESOLVED by the 0.39.2 -> 0.44.1
+    # upgrade (see claude-code-rules.yaml's SECOND CONSOLIDATED FINDING) --
+    # hard assertion again.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code python3 -c \
         "import ctypes
 ctypes.CDLL('libc.so.6', use_errno=True).unshare(0x10000000)" >/dev/null 2>&1
-    if wait_for_log "$checkpoint" "Unshare attempt in claude-code" 15; then
-        assert_equal "seen" "seen" "alert fired (unshare attempt was captured on this host)"
-    else
-        echo "  SKIP test_unshare_attempt_fires: Falco does not appear to surface a failing unshare() syscall to rule evaluation on this build, same class of gap as the mount/raw-socket rules' soft-skipped halves. Not counted as a failure."
-    fi
+    assert_alert_seen "$checkpoint" "Unshare attempt in claude-code" 15
 }
 
 test_uid_map_write_attempt_fires() {
@@ -602,28 +631,20 @@ test_uid_map_write_attempt_fires() {
     # /proc/self/uid_map is what actually maps the calling process to UID 0
     # inside a new user namespace). Triggered independently of whether
     # unshare() itself succeeds -- writing to /proc/self/uid_map without a
-    # freshly created, not-yet-forked-from namespace fails too, which is
-    # fine in principle (same "attempt is the signal" reasoning as the
-    # Squid-override write rule this pattern is copied from).
+    # freshly created, not-yet-forked-from namespace fails too (real EIO,
+    # confirmed live), which is fine (same "attempt is the signal"
+    # reasoning as the Squid-override write rule this pattern is copied
+    # from).
     #
-    # LIVE-VERIFIED that it doesn't fire though, and soft-skips like the
-    # mount/raw-socket rules' gaps: the write genuinely fails (shell
-    # reports "I/O error", i.e. EIO), but neither this rule nor even a
-    # maximally broad throwaway debug rule matching ANY open/openat/
-    # openat2 exit event caught anything for it at all. /proc/*/uid_map is
-    # a synthetic kernel-generated file (not a regular VFS file like the
-    # Squid override path), plausibly why it doesn't produce a normal,
-    # rule-visible open event on this Falco build -- see
-    # claude-code-rules.yaml's "Write attempt to uid_map or setgroups"
-    # comment for the full writeup.
+    # Was a soft-skip on Falco 0.39.2 (this specific open/openat/openat2
+    # event was never captured there, confirmed via a maximally broad
+    # debug rule too); RESOLVED by the 0.39.2 -> 0.44.1 upgrade (see
+    # claude-code-rules.yaml's SECOND CONSOLIDATED FINDING) -- hard
+    # assertion again.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code sh -c \
         'echo "0 1000 1" > /proc/self/uid_map' >/dev/null 2>&1
-    if wait_for_log "$checkpoint" "Write attempt to uid_map or setgroups in claude-code" 15; then
-        assert_equal "seen" "seen" "alert fired (uid_map write attempt was captured on this host)"
-    else
-        echo "  SKIP test_uid_map_write_attempt_fires: Falco does not appear to surface an open/openat/openat2 event for /proc/self/uid_map at all on this build (confirmed via a maximally broad throwaway debug rule too) -- same class of gap as the other syscall-visibility soft-skips in this file. Not counted as a failure."
-    fi
+    assert_alert_seen "$checkpoint" "Write attempt to uid_map or setgroups in claude-code" 15
 }
 
 test_capset_attempt_fires() {
@@ -636,6 +657,13 @@ test_capset_attempt_fires() {
     # EPERM. x86_64 raw syscall numbers used directly since glibc has no
     # capget/capset wrapper (libcap's cap_set_proc() wraps this, but isn't
     # necessarily installed in the image).
+    #
+    # Was a soft-skip on Falco 0.39.2; RESOLVED by the 0.39.2 -> 0.44.1
+    # upgrade (see claude-code-rules.yaml's SECOND CONSOLIDATED FINDING) --
+    # hard assertion again. That same upgrade surfaced a real false
+    # positive (runc's own internal capset() calls on every `docker
+    # compose exec`), fixed via a `proc.name startswith "runc:"` exclusion
+    # in the rule -- see its own comment.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code python3 -c \
         "import ctypes, os
@@ -658,11 +686,7 @@ data[0].effective |= (1 << 21)
 data[0].permitted |= (1 << 21)
 ret = libc.syscall(SYS_capset, ctypes.byref(hdr2), ctypes.byref(data))
 print('capset:', ret, ctypes.get_errno())" >/dev/null 2>&1
-    if wait_for_log "$checkpoint" "Capset attempt in claude-code" 15; then
-        assert_equal "seen" "seen" "alert fired (capset attempt was captured on this host)"
-    else
-        echo "  SKIP test_capset_attempt_fires: Falco does not appear to surface a capset() syscall to rule evaluation on this build -- same class of gap as the mount/umount2/unshare soft-skips in this file (see planned follow-up deep-dive in falco/claude-code-rules.yaml OPEN ITEMS). Not counted as a failure."
-    fi
+    assert_alert_seen "$checkpoint" "Capset attempt in claude-code" 15
 }
 
 test_fileless_execution_via_memfd_fires() {
