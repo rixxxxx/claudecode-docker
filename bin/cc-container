@@ -256,7 +256,9 @@ image_id() {
 # Dockerfile.security-monitor, falco/*.yaml, and falco-notify.sh. Called
 # from update-deps.sh (i.e. `cc-container --update`) so "everything is up
 # to date" also covers this sidecar, not just claude-code/proxy-auth -- see
-# AGENTS.md "Runtime monitoring". Same reasoning as
+# AGENTS.md "Runtime monitoring". Also called directly from main() whenever
+# --monitor is passed (with or without --update, see below) -- see that
+# call site for why. Same reasoning as
 # sync_proxy_auth_sidecar's build above: a plain cached `docker compose
 # build` is a no-op when nothing changed and picks up local edits when
 # something did, via Docker's own layer-checksum cache invalidation -- no
@@ -364,6 +366,7 @@ main() {
     # docker-compose.yml's security-monitor service and AGENTS.md "Runtime
     # monitoring".
     local monitor_enabled=false
+    local auto_stop_enabled=false
     local remaining_args=()
     for arg in "$@"; do
         if [ "$arg" = "--monitor" ]; then
@@ -388,6 +391,7 @@ main() {
         # stop-watcher off by default -- this auto-add only happens here.
         if [ "${SECURITY_MONITOR_STOP_THRESHOLD:-3}" != "0" ]; then
             compose_profile_args+=(--profile auto-stop)
+            auto_stop_enabled=true
             echo "==> Auto-stop: starting stop-watcher (stops claude-code after \${SECURITY_MONITOR_STOP_THRESHOLD:-3} CRITICAL alerts; set SECURITY_MONITOR_STOP_THRESHOLD=0 in .env to disable)"
         fi
     fi
@@ -398,6 +402,23 @@ main() {
     fi
 
     sync_proxy_auth_sidecar
+
+    # Same reasoning as sync_proxy_auth_sidecar above, and previously only
+    # wired into `cc-container --update` (via update-deps.sh) -- confirmed
+    # live (2026-09-16) that plain `--monitor` without `--update` has the
+    # exact same stale-image gap sync_security_monitor_sidecar's own
+    # comment already documents: a cached `up -d` here silently kept
+    # running security-monitor's image from before a
+    # Dockerfile.security-monitor/falco/*.yaml edit, with `--force-recreate`
+    # unable to fix it since that only recreates the *container* from the
+    # already-stale *image*. Called here too so the actually-documented
+    # `--monitor` workflow is covered, not just `--update`.
+    if [ "$monitor_enabled" = true ]; then
+        sync_security_monitor_sidecar
+        if [ "$auto_stop_enabled" = true ]; then
+            sync_stop_watcher_sidecar
+        fi
+    fi
 
     docker compose "${compose_profile_args[@]}" up -d
 

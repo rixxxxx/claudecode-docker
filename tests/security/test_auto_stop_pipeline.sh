@@ -63,6 +63,17 @@ trap cleanup EXIT
 
 echo "  (using COMPOSE_PROJECT_NAME=$PROJECT_A / $PROJECT_B -- can take a while on first run, builds security-monitor + stop-watcher too)"
 
+# Same reasoning as test_falco_rules.sh's build step: both images are
+# fixed-tag (not $PROJECT-scoped), so `up -d` alone can silently reuse a
+# stale image from an earlier session/test run on this host. Unconditional
+# build is a fast no-op via Docker's layer cache when nothing changed.
+if ! "${COMPOSE_A[@]}" --profile monitoring --profile auto-stop build security-monitor stop-watcher 2>&1 | sed 's/^/  /'; then
+    CURRENT_TEST="security-monitor/stop-watcher image build"
+    _fail "docker compose --profile monitoring --profile auto-stop build failed -- see output above"
+    print_summary
+    exit 1
+fi
+
 if ! "${COMPOSE_A[@]}" --profile monitoring --profile auto-stop up -d --wait 2>&1 | sed 's/^/  /'; then
     # Same driver-failure vs. real-regression distinction as
     # test_falco_rules.sh.

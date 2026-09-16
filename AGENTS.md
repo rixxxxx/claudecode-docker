@@ -442,10 +442,15 @@ touching this code:
        in (bash, sh, dash, zsh, ash)`, `output: DEBUG shell spawn
        pexepath=%proc.pexepath pname=%proc.pname cmdline=%proc.cmdline`,
        `priority: DEBUG` (visible since `falco.yaml`'s `priority: debug`
-       threshold). `docker compose --profile monitoring up -d
-       --force-recreate security-monitor`, repeat step 3, read the value,
-       remove the debug rule, and `--force-recreate` again to restore the
-       real ruleset.
+       threshold). Rebuild first -- `--force-recreate` alone only recreates
+       the *container* from whatever image already exists; the rules file
+       is baked in via `COPY`, not bind-mounted, so an edit needs a real
+       rebuild to actually take effect: `docker compose --profile
+       monitoring build security-monitor && docker compose --profile
+       monitoring up -d --force-recreate security-monitor` (or just
+       `cc-container --monitor`, which now does both steps itself). Repeat
+       step 3, read the value, remove the debug rule, and rebuild +
+       `--force-recreate` again to restore the real ruleset.
     6. Record the dated outcome (and, if it false-positives, the observed
        `pexepath` value) in `falco/claude-code-rules.yaml`'s OPEN ITEMS
        header.

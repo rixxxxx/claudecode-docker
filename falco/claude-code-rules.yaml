@@ -405,9 +405,18 @@
 #     FINDING above -- irrelevant here since the resulting execve (a
 #     heavily-instrumented event type) is what both working rules
 #     actually key off, not the memfd_create/execveat syscalls themselves.
-#   - setresuid/setuid called directly -- privilege-escalation path that
-#     doesn't go through sudo/su/pkexec/doas, so the existing
-#     binary-name-based "Privilege escalation attempt" rule can't see it.
+#   - DONE 2026-09-16: setresuid/setuid called directly -- see "Setuid or
+#     setresuid called directly in claude-code" rule below (near capset)
+#     for the full writeup. Live-confirmed both `setuid(0)` and
+#     `setresuid(0,0,0)` return real EPERM (CAP_SETUID/CAP_SETGID sit
+#     unused in claude-code's capability bounding set, same as every
+#     other capability-gated item in this list) -- and, as failing
+#     syscalls, fire correctly via the same reliable capture path as
+#     mount/umount2/unshare/capset (not the new sched_process_exec
+#     regression that affects successful setuid-transitioning execve,
+#     see the mount-binary rule's comment). Deliberately does not cover
+#     setgid/setresgid/setregid/setreuid -- matches the OPEN ITEMS
+#     wording, not a silent gap.
 #   - Unclear, needs live verification before designing a rule (not simply
 #     assumed): DNS-based exfiltration (UDP:53) -- whether the `internal`
 #     network even has a path to an externally-resolving DNS server at all
@@ -1600,5 +1609,67 @@
   output: >
     Capset attempt in claude-code
     (args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, privilege-escalation, defense-evasion]
+
+# Added 2026-09-16 (see OPEN ITEMS "Candidate future rules" -- next item
+# after capset above): covers setuid()/setresuid() called directly,
+# bypassing the existing binary-name-based "Privilege escalation attempt"
+# rule (which only watches for sudo/su/pkexec/doas process names). Same
+# capability reasoning as capset above -- CAP_SETUID/CAP_SETGID are part
+# of Docker's default 14 capabilities, so they sit in claude-code's
+# bounding set only, not effectively usable by this non-root,
+# no-ambient-capability process (CapEff confirmed all-zero throughout this
+# file's investigations).
+#
+# LIVE-VERIFIED 2026-09-16: a single process printed errno right after
+# each call -- both `setuid(0)` and `setresuid(0, 0, 0)` returned real
+# `EPERM` (errno 1), confirming the capability prediction directly rather
+# than assuming it. As a FAILING syscall (not a successful
+# setuid-transitioning execve), this uses the older, reliably-working
+# capture path -- not the new `sched_process_exec`-based path that the
+# "Mount or umount binary executed" rule's comment documents as broken
+# for successful setuid execs (falcosecurity/libs#2726). This rule fires
+# correctly, matching every other failing-syscall attempt rule in this
+# file (mount, umount2, unshare, capset).
+#
+# Written from the start without the deprecated `evt.dir = <` condition
+# (unlike the older rules above, which still have it and get a
+# LOAD_DEPRECATED_ITEM warning on load) -- Falco 0.44.1 dropped enter
+# events entirely, so `evt.dir = <` is always true and meaningless on
+# this version; no need to carry the now-pointless condition into a new
+# rule. Retrofitting the older rules is a separate cleanup, not done
+# here.
+#
+# `proc.name startswith "runc:"` excluded pre-emptively, matching both
+# the capset rule's own fix above and Falco's own upstream "Non sudo
+# setuid" rule (falco-incubating_rules.yaml, not loaded by this project --
+# notably uses the exact same runc exclusion, independently confirming
+# this is the right idiom). LIVE-CONFIRMED 2026-09-16 via a temporary
+# zero-exclusion debug rule: `runc:[2:INIT] init` and `runc:[1:CHILD]
+# init` both call setuid(1000) (res=0) during this container's own
+# startup -- exactly the false-positive source the exclusion is meant to
+# prevent, not just a theoretical precaution.
+#
+# Scope, deliberately: only `setuid`/`setresuid`, matching the OPEN ITEMS
+# wording exactly. Does NOT cover `setgid`/`setresgid`/`setregid`/
+# `setreuid` -- a known, accepted gap, not silently forgotten.
+- rule: Setuid or setresuid called directly in claude-code
+  desc: >
+    A process inside claude-code called setuid() or setresuid() directly
+    -- a privilege-escalation path that bypasses the existing
+    binary-name-based "Privilege escalation attempt" rule (sudo/su/
+    pkexec/doas), since it doesn't need to spawn any of those binaries.
+    claude-code lacks effective CAP_SETUID/CAP_SETGID (see comment
+    above), so this is expected to fail, but the attempt itself is the
+    signal, not success.
+  condition: >
+    claude_code_container
+    and evt.type in (setuid, setresuid)
+    and not proc.name startswith "runc:"
+    and not (claude_code_binary_exepath or node_binary_exepath)
+  output: >
+    Setuid or setresuid called directly in claude-code
+    (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, privilege-escalation, defense-evasion]

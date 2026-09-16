@@ -432,16 +432,21 @@ cc-container --monitor          # combine with --update if you also want that
 ```
 
 or directly via `docker compose --profile monitoring up -d
-security-monitor`.
+security-monitor` -- though that bypasses the auto-rebuild described below,
+so prefer `cc-container --monitor` unless you have a specific reason not to.
 
 Verified end-to-end against a live build (Falco 0.39.2) on 2026-09-11 —
 rule matching, live log output, and desktop notification all confirmed
 working.
 
-`cc-container --update` also keeps this sidecar's image up to date now
-(rebuilds it if `Dockerfile.security-monitor`/`falco/*.yaml`/
-`falco-notify.sh` changed locally), regardless of whether `--monitor` is
-passed to that particular invocation.
+`cc-container --monitor` (with or without `--update`) always rebuilds this
+sidecar's image first (cached, so a no-op when nothing changed) before
+starting it, picking up local `Dockerfile.security-monitor`/`falco/*.yaml`/
+`falco-notify.sh` edits automatically. This matters because its image tag
+is fixed rather than per-session, so a plain `docker compose ... up -d`
+would otherwise happily keep running whatever was built last, silently
+ignoring newer local edits -- confirmed live 2026-09-16 as the cause of a
+new rule's own test failing with a completely empty log.
 
 When `--monitor` is used, `claude-code` waits for `security-monitor` (and
 `stop-watcher`, its auto-stop companion — see below) to actually report

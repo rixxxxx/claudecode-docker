@@ -53,6 +53,22 @@ trap cleanup EXIT
 
 echo "  (using COMPOSE_PROJECT_NAME=$PROJECT -- can take a while on first run, builds security-monitor too)"
 
+# Unconditional build before `up`, not just on the first run: security-monitor's
+# image tag (claude-code-security-monitor:latest) is fixed, not scoped to
+# $PROJECT, so `up -d` alone would happily reuse a stale image left over from
+# any earlier session/test run on this host, silently ignoring local edits to
+# Dockerfile.security-monitor/falco/*.yaml/falco-notify.sh (confirmed live
+# 2026-09-16: this is exactly what made a new rule's own test fail with a
+# completely empty log). Docker's layer cache makes this a fast no-op when
+# nothing changed -- see bin/cc-container's sync_security_monitor_sidecar for
+# the same reasoning applied to the interactive `cc-container --monitor` path.
+if ! "${COMPOSE[@]}" --profile monitoring build security-monitor 2>&1 | sed 's/^/  /'; then
+    CURRENT_TEST="security-monitor image build"
+    _fail "docker compose --profile monitoring build security-monitor failed -- see output above"
+    print_summary
+    exit 1
+fi
+
 if ! "${COMPOSE[@]}" --profile monitoring up -d --wait 2>&1 | sed 's/^/  /'; then
     # Distinguish "this environment structurally can't run Falco's eBPF
     # driver" (soft-skip, exit 0, doesn't fail the tier) from a genuine
@@ -689,6 +705,30 @@ print('capset:', ret, ctypes.get_errno())" >/dev/null 2>&1
     assert_alert_seen "$checkpoint" "Capset attempt in claude-code" 15
 }
 
+test_setuid_setresuid_attempt_fires() {
+    # New 2026-09-16: next item after capset in OPEN ITEMS "Candidate
+    # future rules" -- setuid()/setresuid() called directly, bypassing the
+    # existing binary-name-based "Privilege escalation attempt" rule
+    # (sudo/su/pkexec/doas). CAP_SETUID/CAP_SETGID sit unused in
+    # claude-code's capability bounding set (same reasoning as every other
+    # capability-gated rule in this file) -- a direct errno check confirmed
+    # both setuid(0) and setresuid(0,0,0) return real EPERM here.
+    #
+    # As FAILING syscalls (not a successful setuid-transitioning execve),
+    # this uses the reliable capture path every other failing-syscall
+    # attempt rule in this file uses (mount, umount2, unshare, capset),
+    # not the new sched_process_exec regression that affects successful
+    # setuid execs (see test_mount_binary_execution_fires above) -- hard
+    # assertion, not a soft-skip.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import ctypes
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+libc.setuid(0)
+libc.setresuid(0, 0, 0)" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Setuid or setresuid called directly in claude-code" 15
+}
+
 test_fileless_execution_via_memfd_fires() {
     # New 2026-09-15: next item after capset in OPEN ITEMS "Candidate
     # future rules". Unlike every other item closed this session,
@@ -750,6 +790,7 @@ run_test test_mount_binary_execution_fires
 run_test test_unshare_attempt_fires
 run_test test_uid_map_write_attempt_fires
 run_test test_capset_attempt_fires
+run_test test_setuid_setresuid_attempt_fires
 run_test test_fileless_execution_via_memfd_fires
 
 print_summary
