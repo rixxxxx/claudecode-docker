@@ -362,12 +362,13 @@ test_privilege_escalation_attempt() {
             # this file keep working). See "Mount or umount binary
             # executed in claude-code"'s comment in claude-code-rules.yaml
             # for the full writeup. This used to be a reliable hard
-            # assertion on Falco 0.39.2.
+            # assertion on Falco 0.39.2. Filed upstream 2026-09-16 as
+            # falcosecurity/libs#3113; still open as of this writing.
             "${COMPOSE[@]}" exec -T claude-code "$bin" --help >/dev/null 2>&1 || true
             if wait_for_log "$checkpoint" "Privilege escalation attempt in claude-code" 15; then
                 assert_equal "seen" "seen" "alert fired ($bin attempt was captured on this host)"
             else
-                echo "  SKIP test_privilege_escalation_attempt ($bin): Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture) -- same regression as the mount/umount binary rule. Not counted as a failure."
+                echo "  SKIP test_privilege_escalation_attempt ($bin): Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture) -- same regression as the mount/umount binary rule. Tracked upstream as falcosecurity/libs#3113. Not counted as a failure."
             fi
         else
             "${COMPOSE[@]}" exec -T claude-code sh -c "
@@ -609,13 +610,14 @@ test_mount_binary_execution_fires() {
     # and a fourth, unrelated setuid binary `chsh` reproducing the exact
     # same silence. See claude-code-rules.yaml's "Mount or umount binary
     # executed" comment for the full writeup. Back to soft-skip pending an
-    # upstream fix.
+    # upstream fix. Filed upstream 2026-09-16 as falcosecurity/libs#3113;
+    # still open as of this writing.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code sh -c 'mount >/dev/null 2>&1; umount >/dev/null 2>&1' >/dev/null 2>&1
     if wait_for_log "$checkpoint" "Mount or umount binary executed in claude-code" 15; then
         assert_equal "seen" "seen" "alert fired (mount/umount binary execution was captured on this host)"
     else
-        echo "  SKIP test_mount_binary_execution_fires: Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture, confirmed general via su/chsh too, not mount/umount-specific) -- see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Not counted as a failure."
+        echo "  SKIP test_mount_binary_execution_fires: Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture, confirmed general via su/chsh too, not mount/umount-specific) -- see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Tracked upstream as falcosecurity/libs#3113. Not counted as a failure."
     fi
 }
 

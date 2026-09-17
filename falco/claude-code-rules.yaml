@@ -270,7 +270,10 @@
 #      discovered gap from the 0.39.2 one (which this upgrade otherwise
 #      fixed) -- see "Mount or umount binary executed in claude-code"
 #      below for the full writeup, the ruled-out alternatives (container-
-#      plugin interference), and current soft-skip status.
+#      plugin interference), and current soft-skip status. Filed upstream
+#      as falcosecurity/libs#3113 (2026-09-16); open, no maintainer
+#      response yet as of this writing -- check that issue for a fix
+#      before re-investigating this from scratch.
 #
 # FOLLOW-UP RESEARCH, 2026-09-15 (kept for context, largely superseded by
 # the resolution above): checked Falco's own public rules
@@ -1403,11 +1406,10 @@
 # chsh as BINARIES all SUCCEED at execve (regardless of what they do
 # internally) and go through the new sched_process_exec path -- which
 # apparently doesn't generate an event when that successful exec also
-# completes a setuid credential transition. Not confirmed against Falco's
-# own issue tracker (no existing report found for this exact combination)
-# -- worth filing upstream against falcosecurity/libs#2726 with the
-# `chsh`/`su` repro above. Also does not affect ptrace's own test since
-# PID-1 ptrace is a failing call, same reasoning.
+# completes a setuid credential transition. Filed upstream 2026-09-16 as
+# falcosecurity/libs#3113, with the `chsh`/`su` repro above -- open, no
+# maintainer response yet as of this writing. Also does not affect
+# ptrace's own test since PID-1 ptrace is a failing call, same reasoning.
 #
 # Ruled out separately: container-plugin interference (a maximally broad
 # debug rule scoped by `user.name = claudecode` alone, with NO
@@ -1418,7 +1420,8 @@
 #
 # tests/security/test_falco_rules.sh's test_mount_binary_execution_fires
 # and test_privilege_escalation_attempt's `su` case are soft-skips
-# pending an upstream fix -- see their own comments.
+# pending an upstream fix (falcosecurity/libs#3113) -- see their own
+# comments.
 - rule: Mount or umount binary executed in claude-code
   desc: >
     The mount or umount command-line utility was executed inside
