@@ -37,6 +37,38 @@ services:
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
     networks:
       - internal
+    # Forces dockerd to resolve claude-code's upstream (non-local) DNS
+    # queries from THIS container's own network namespace instead of the
+    # host's -- workaround for CVE-2024-29018 / GHSA-mq39-4gv4-mvpx (Moby
+    # advisory, fixed in Docker Engine 26.0.0/25.0.4/23.0.11): on an
+    # `internal: true` network, an unpatched dockerd that detects the HOST
+    # using a loopback DNS forwarder (e.g. systemd-resolved at 127.0.0.53,
+    # Ubuntu's default) resolves the container's upstream queries from the
+    # HOST's own network namespace instead of the container's -- silently
+    # bypassing this network's `internal: true` isolation (see that key's
+    # own comment below) and opening a live DNS-exfiltration channel
+    # (secret encoded as a subdomain label, e.g. secret.attacker.example,
+    # picked up by the attacker's own authoritative nameserver). Setting a
+    # custom upstream here is the advisory's own documented workaround: it
+    # forces dockerd onto the code path that resolves from the
+    # container's namespace instead, so on this unroutable network the
+    # query correctly fails/times out there rather than silently
+    # succeeding via the host. The specific IP below doesn't matter -- any
+    # real public resolver works, since `internal: true` guarantees this
+    # query can never actually reach it either way; 1.1.1.1 (Cloudflare)
+    # is used here only because it's recognizable as intentional, not
+    # forgotten config. This does NOT touch Docker's embedded resolver at
+    # 127.0.0.11 (still in /etc/resolv.conf, still answers `egress-proxy`
+    # locally via network aliases, no forwarding involved) -- only what
+    # 127.0.0.11 forwards non-local queries to. Fixes the gap regardless
+    # of the host's own Docker Engine patch level, since this repo is
+    # deployed on arbitrary hosts it can't control. Detection-side
+    # counterpart: falco/claude-code-rules.yaml's "DNS query bypassing
+    # embedded resolver in claude-code" rule. See also README
+    # "Troubleshooting" -- `nslookup api.anthropic.com` is expected to
+    # fail here, that's confirmation this isolation is intact, not a bug.
+    dns:
+      - 1.1.1.1
     depends_on:
       egress-proxy:
         condition: service_healthy

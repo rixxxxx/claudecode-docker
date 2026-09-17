@@ -768,6 +768,91 @@ else:
     assert_alert_seen "$checkpoint" "Fileless execution via memfd_create" 15
 }
 
+test_dns_query_bypassing_resolver_fires() {
+    # New 2026-09-17: companion to the "DNS query bypassing embedded
+    # resolver in claude-code" rule and the docker-compose.yml claude-code
+    # `dns:` override -- see falco/claude-code-rules.yaml OPEN ITEMS "DNS-
+    # based exfiltration" for the CVE-2024-29018/GHSA-mq39-4gv4-mvpx
+    # background. Uses a raw socket.sendto() rather than nslookup/dig
+    # (neither reliably present, and both would go through the embedded
+    # resolver at 127.0.0.11 anyway -- not what this rule targets) to
+    # simulate code crafting its own UDP:53 packet directly to an external
+    # resolver. Expected to fail at the kernel level (ENETUNREACH, no
+    # route out of this `internal: true` network) -- the point is the
+    # attempt, not a real DNS response.
+    #
+    # Soft-skips instead of hard-failing, same pattern as
+    # test_cloud_metadata_contact_attempt -- CONFIRMED 2026-09-17 (not
+    # just an open question anymore, see falco/claude-code-rules.yaml's
+    # DNS rule comment for the full writeup): fd.rip/fd.rport/fd.sip/
+    # fd.l4proto all come back <NA> for a synchronously-failing sendto()
+    # here, same as connect(), and no evt.arg.* fallback exists either
+    # (the destination tuple comes back NULL, not just unenriched). This
+    # is a permanent, accepted soft-skip on this deliberately-unroutable
+    # `internal: true` sandbox network, not a pending fix.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.sendto(b'\x00', ('1.1.1.1', 53))
+except OSError:
+    pass
+s.close()" >/dev/null 2>&1
+    if wait_for_log "$checkpoint" "DNS query from claude-code not directed at embedded resolver" 15; then
+        assert_equal "seen" "seen" "alert fired (fd.sip enrichment worked on this host)"
+    else
+        echo "  SKIP test_dns_query_bypassing_resolver_fires: confirmed Falco/eBPF limitation on this host/network (fd.rip/fd.rport/fd.sip/fd.l4proto and the evt.arg.tuple fallback all come back <NA>/NULL for a synchronously-failing sendto() -- see falco/claude-code-rules.yaml's DNS rule comment). Not counted as a failure."
+    fi
+}
+
+test_dns_query_to_routable_non_resolver_fires() {
+    # Added 2026-09-17, hard-assert companion to
+    # test_dns_query_bypassing_resolver_fires above. That test's target
+    # (1.1.1.1, genuinely outside this `internal: true` network) makes the
+    # sendto() fail with ENETUNREACH -- confirmed (see that test's comment
+    # and falco/claude-code-rules.yaml's DNS rule comment) that Falco's
+    # fd.rip/fd.rport/fd.sip/fd.l4proto enrichment, and the evt.arg.tuple
+    # fallback, all come back <NA>/NULL for that specific failure mode, so
+    # it can never be more than a permanent soft-skip here.
+    #
+    # This test instead targets `egress-proxy`'s own address -- reachable
+    # within this same internal Docker network (a route to it exists,
+    # unlike 1.1.1.1), resolved via the embedded resolver itself
+    # (127.0.0.11, the same one the real rule excludes) so the resolution
+    # step doesn't trip the alert. The follow-up sendto() to that address
+    # on UDP:53 is not aimed at 127.0.0.11 and DOES find a route, so the
+    # syscall succeeds at the socket layer regardless of whether anything
+    # is actually listening on port 53 there -- exactly the case the real
+    # rule's own comment already covers ("Any DNS-port traffic NOT aimed
+    # at 127.0.0.11 is ... worth an alert either way"). Gives a genuine,
+    # live-fire-verified hard PASS for the "not fd.sip = 127.0.0.11"
+    # comparison itself, independent of the separate, permanently-skipped
+    # unroutable-destination case above. This same test run is also what
+    # caught and fixed the rule's real fd.rip-vs-fd.sip field bug (see
+    # falco/claude-code-rules.yaml's DNS rule comment) -- it originally
+    # failed even though the alert *had* fired, because the rule checked
+    # the wrong field.
+    local egress_ip
+    egress_ip="$("${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import socket; print(socket.gethostbyname('egress-proxy'))" 2>/dev/null | tr -d '\r\n')"
+    if [ -z "$egress_ip" ]; then
+        echo "  SKIP test_dns_query_to_routable_non_resolver_fires: could not resolve egress-proxy's address from inside claude-code, nothing to target. Not counted as a failure."
+        return
+    fi
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code python3 -c \
+        "import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.sendto(b'\x00', ('$egress_ip', 53))
+except OSError:
+    pass
+s.close()" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "DNS query from claude-code not directed at embedded resolver" 15 \
+        "target was egress-proxy's resolved address ($egress_ip:53), chosen because it's routable within the internal network unlike the permanently-<NA> 1.1.1.1 case in test_dns_query_bypassing_resolver_fires above"
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -794,5 +879,7 @@ run_test test_uid_map_write_attempt_fires
 run_test test_capset_attempt_fires
 run_test test_setuid_setresuid_attempt_fires
 run_test test_fileless_execution_via_memfd_fires
+run_test test_dns_query_bypassing_resolver_fires
+run_test test_dns_query_to_routable_non_resolver_fires
 
 print_summary

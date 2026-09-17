@@ -420,10 +420,62 @@
 #     see the mount-binary rule's comment). Deliberately does not cover
 #     setgid/setresgid/setregid/setreuid -- matches the OPEN ITEMS
 #     wording, not a silent gap.
-#   - Unclear, needs live verification before designing a rule (not simply
-#     assumed): DNS-based exfiltration (UDP:53) -- whether the `internal`
-#     network even has a path to an externally-resolving DNS server at all
-#     wasn't checked this session.
+#   - Root-caused and fixed 2026-09-17 (research-confirmed, not yet
+#     live-verified -- see below): DNS-based exfiltration (UDP:53).
+#     Identified the real, documented vulnerability class this topology
+#     was exposed to -- CVE-2024-29018 / GHSA-mq39-4gv4-mvpx (Moby
+#     advisory, fixed in Docker Engine 26.0.0/25.0.4/23.0.11). On an
+#     `internal: true` network, an unpatched dockerd that detects the
+#     HOST using a loopback DNS forwarder (e.g. systemd-resolved at
+#     127.0.0.53, Ubuntu's default) resolves the container's upstream
+#     (non-local) DNS queries from the HOST's network namespace instead
+#     of the container's -- silently bypassing `internal: true` isolation
+#     and opening a live exfiltration channel (secret encoded in a
+#     subdomain label, attacker's own authoritative nameserver receives
+#     it). Fixed via docker-compose.yml's claude-code `dns:` override
+#     (see that key's own comment) -- the advisory's documented
+#     workaround, independent of the host's own Docker Engine patch
+#     level, which this repo can't control since users deploy it on
+#     arbitrary hosts. Detection-side: added "DNS query bypassing
+#     embedded resolver in claude-code" rule below (near "Outbound
+#     connection ... not via egress-proxy", its UDP analog) as
+#     defense-in-depth, same rationale as the raw-socket/mount rules
+#     above -- alert on the attempt even though the compose fix should
+#     make it structurally impossible to succeed.
+#     LIVE-VERIFIED 2026-09-17 (real host, this repo's actual docker-compose
+#     stack): `python3 -c "socket.gethostbyname('egress-proxy')"` inside
+#     claude-code returns the container's real internal IP (embedded
+#     resolver still works, unaffected) while the identical call for
+#     `api.anthropic.com` raises `socket.gaierror: [Errno -3] Temporary
+#     failure in name resolution` -- confirms the `dns:` override closes
+#     external resolution exactly as designed, without breaking
+#     `egress-proxy` name resolution. (Note: this image has no
+#     `nslookup`/`dig` at all -- no dnsutils/bind-utils in the Dockerfile
+#     -- Python's `socket.gethostbyname()` is the only resolver check that
+#     actually works here; README's Troubleshooting section updated to
+#     match.)
+#     RESOLVED 2026-09-17 (item 1): test_dns_query_bypassing_resolver_fires's
+#     soft-skip live-verified via a throwaway DEBUG rule on a real
+#     Docker/eBPF host -- fd.rip/fd.rport/fd.sip/fd.l4proto ALL confirmed
+#     <NA> for a synchronously-failing sendto(), same as the cloud-metadata
+#     rule's connect() case, AND the hoped-for evt.arg.tuple fallback also
+#     comes back NULL for this failure mode (unlike "Raw INET socket
+#     creation attempt"'s always-populated syscall args) -- no condition
+#     rewrite fixes this. See the DNS rule's own comment (above it) for the
+#     full writeup. Reclassified as a permanent, accepted soft-skip, not a
+#     pending fix. Same investigation also found and fixed a REAL bug in
+#     this rule unrelated to the <NA> question: it checked fd.rip/fd.rport
+#     (the local/source endpoint for this event type) instead of
+#     fd.sip/fd.sport (the actual destination) -- a false-negative gap for
+#     any real, successfully-routed exfiltration attempt. See the DNS
+#     rule's comment for the fix and test_dns_query_to_routable_non_resolver_fires
+#     (new hard-assert test) for the live confirmation.
+#     STILL NEEDS, on a real Docker/eBPF host with the `monitoring`
+#     profile active:
+#       2. Ideally also confirm on an unpatched (pre-26.0.0/25.0.4/23.0.11)
+#          Docker Engine that the `dns:` override is what's actually doing
+#          the work here, not just an already-patched host -- not done
+#          this round, host's own Engine version wasn't checked.
 #
 # More candidates, from a second pass over public Falco-bypass research
 # (2026-09-14, sources: armosec/curing, MatheuZSecurity/Furtex,
@@ -737,6 +789,100 @@
     (dest=%fd.rip:%fd.rport command=%proc.cmdline user=%user.name container=%container.id)
   priority: WARNING
   tags: [claude-code, network]
+
+# UDP analog of the TCP-only rule above (fd.l4proto = tcp there, so this
+# traffic is otherwise invisible to it). See docker-compose.yml's
+# claude-code `dns:` override and its comment for the vulnerability this
+# closes (CVE-2024-29018 / GHSA-mq39-4gv4-mvpx: an unpatched dockerd can
+# resolve a container's DNS queries from the HOST's network namespace on
+# an `internal: true` network, bypassing isolation entirely). Legitimate
+# DNS need here is essentially zero -- Squid resolves hostnames itself
+# when proxying, and the only name claude-code itself needs is the
+# Compose service name `egress-proxy`, answered locally by Docker's
+# embedded resolver (127.0.0.11) without forwarding. Any DNS-port traffic
+# NOT aimed at 127.0.0.11 is therefore either a raw direct-to-external-
+# resolver exfiltration attempt or a resolv.conf misconfiguration -- worth
+# an alert either way. Added as defense-in-depth even though the `dns:`
+# override should make this structurally unable to succeed, same
+# rationale as the raw-socket/mount attempt-detector rules above.
+#
+# LIVE-VERIFIED 2026-09-17 (real host, monitoring profile, throwaway DEBUG
+# rule matching this event unconditionally -- condition deliberately had
+# no fd.* dependency of its own, `claude_code_container and evt.type in
+# (sendto, sendmsg) and proc.name = python3`, after a first attempt that
+# filtered on `fd.l4proto = udp` turned out to self-mask the very case
+# under test): triggering the exact payload
+# test_dns_query_bypassing_resolver_fires uses (`sendto()` to 1.1.1.1:53,
+# fails with ENETUNREACH as expected) produced
+# `res=-101 rip=<NA> rport=<NA> sip=<NA> l4proto=<NA> ... tuple=NULL`.
+# Confirms fd.rip/fd.rport/fd.sip/fd.l4proto ALL come back <NA> for a
+# synchronously-failing sendto(), same as the already-documented
+# connect() case (OPEN ITEMS "Known, accepted limitation" above) -- but
+# ALSO confirms the evt.arg.tuple-based fallback this comment used to
+# propose as the fix does NOT work here either: unlike "Raw INET socket
+# creation attempt"'s evt.arg.domain/evt.arg.type (always populated from
+# the socket() syscall's own parameters, regardless of outcome),
+# sendto()'s destination tuple came back completely NULL, not just
+# unenriched -- Falco apparently only decodes it when the send actually
+# reaches a route. No Falco field observed on this build carries the
+# destination for this specific failure mode, so there is no condition
+# rewrite that fixes this. Reclassified from "open question" to the same
+# category as "Contact cloud metadata service"'s connect() case: a known,
+# accepted limitation of this deliberately-unroutable `internal: true`
+# sandbox network, not a bug in this rule. The rule itself is believed
+# correct and expected to fire on a network where the query can actually
+# reach an external resolver (e.g. a misconfigured or partially-routable
+# host) -- it just can't be live-fire-verified in this repo's own sandbox.
+# tests/security/test_falco_rules.sh's test_dns_query_bypassing_resolver_fires
+# keeps its soft-skip permanently for this reason (matching
+# test_cloud_metadata_contact_attempt's own status), not pending further
+# investigation.
+#
+# REAL BUG FOUND AND FIXED 2026-09-17, independent of the <NA> question
+# above: this rule originally checked `fd.rip`/`fd.rport`, but those
+# fields turned out to hold the LOCAL/source endpoint for an outbound
+# sendto()/sendmsg() on an unconnected UDP socket, not the destination --
+# confirmed via a dedicated field-dump debug rule (`%fd.rip %fd.rport
+# %fd.sip %fd.sport %fd.cip %fd.cport %fd.lip %fd.lport`) against two
+# independent real events: claude-code's own legitimate embedded-resolver
+# query (`rip=127.0.0.1 rport=<ephemeral> sip=127.0.0.11 sport=53`) and a
+# new test targeting `egress-proxy`'s own reachable address within this
+# same internal network (`rip=0.0.0.0 rport=<ephemeral> sip=172.21.0.3
+# sport=53`) -- in both, the actual destination is in `fd.sip`/`fd.sport`,
+# while `fd.rip`/`fd.rport` mirror `fd.cip`/`fd.cport` (the client/local
+# side). This matches how "Contact cloud metadata service" (above) already
+# correctly keys on `fd.sip`, not `fd.rip`, for its own connect() case --
+# this rule was the one inconsistent with that established, correct
+# pattern. Practical impact: as originally written, this rule would have
+# silently never fired for a real DNS-exfiltration attempt that actually
+# reached a destination (only the coincidentally-already-broken
+# unroutable-destination case ever mattered, and that one is <NA>
+# regardless of which field is checked) -- a false-negative gap in a
+# CRITICAL rule, not just a cosmetic issue. Fixed by switching to
+# `fd.sip`/`fd.sport`. Verified live via the new
+# test_dns_query_to_routable_non_resolver_fires (hard PASS after the fix);
+# test_dns_query_bypassing_resolver_fires above is unaffected and stays a
+# permanent soft-skip (fd.sip was independently confirmed <NA> for that
+# unroutable case too, in the same debug dump that found this bug).
+- rule: DNS query bypassing embedded resolver in claude-code
+  desc: >
+    claude-code attempted a DNS (UDP:53) query directed somewhere other
+    than Docker's own embedded resolver (127.0.0.11). See
+    docker-compose.yml's claude-code `dns:` override and its comment
+    (CVE-2024-29018 / GHSA-mq39-4gv4-mvpx workaround) for why this should
+    never succeed -- on this `internal: true` network the query has
+    nowhere to go and should fail/time out.
+  condition: >
+    (evt.type in (connect, sendto, sendmsg) and evt.dir = <)
+    and claude_code_container
+    and fd.l4proto = udp
+    and fd.sport = 53
+    and not fd.sip = "127.0.0.11"
+  output: >
+    DNS query from claude-code not directed at embedded resolver
+    (dest=%fd.sip:%fd.sport command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, network, defense-evasion, credentials]
 
 # Originally scoped to all of /home/claudecode/.claude/ minus a growing
 # exclusion list (statusline.py, settings.json) -- abandoned after two

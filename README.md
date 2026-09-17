@@ -643,10 +643,22 @@ Find blocked connections in the proxy log:
 docker compose logs egress-proxy | grep TCP_DENIED
 ```
 
-Test DNS resolution inside the Claude Code container:
+Test DNS resolution inside the Claude Code container (no `nslookup`/`dig`
+in this image -- use Python's resolver instead):
 
 ```bash
-docker compose exec claude-code nslookup api.anthropic.com
+# Resolving the Compose service name should work -- Docker's embedded
+# resolver (127.0.0.11) answers this locally, no forwarding involved:
+docker compose exec claude-code python3 -c "import socket; print(socket.gethostbyname('egress-proxy'))"
+
+# Resolving an external hostname directly is EXPECTED TO FAIL -- claude-code
+# doesn't need it (Squid resolves target hostnames itself when proxying)
+# and the `internal: true` network plus claude-code's `dns:` override (see
+# docker-compose.yml) are specifically designed to make this fail with
+# "Temporary failure in name resolution". A working real answer here would
+# indicate the CVE-2024-29018 isolation-bypass gap that override closes,
+# not a healthy config:
+docker compose exec claude-code python3 -c "import socket; print(socket.gethostbyname('api.anthropic.com'))"   # should raise socket.gaierror
 ```
 
 ## Known limitations
@@ -654,6 +666,15 @@ docker compose exec claude-code nslookup api.anthropic.com
 - The firewall protects against exfiltration to unknown targets, not
   against misuse of the allowed domains themselves (e.g.
   `api.anthropic.com`).
+- DNS resolution from inside `claude-code` is deliberately broken for
+  external hostnames (only the `egress-proxy` Compose service name
+  resolves, via Docker's embedded DNS) -- this is intentional isolation,
+  not a bug, and closes a real vulnerability class (CVE-2024-29018 /
+  GHSA-mq39-4gv4-mvpx) where an unpatched Docker Engine could otherwise
+  resolve a container's DNS queries from the host's network namespace,
+  bypassing `internal: true` entirely. See docker-compose.yml's
+  claude-code `dns:` override comment and falco/claude-code-rules.yaml's
+  OPEN ITEMS for the full writeup.
 - When using `--dangerously-skip-permissions`, the risk remains that a
   malicious project could exfiltrate anything accessible in the
   container via an allowed domain. Only use with trusted repositories.
