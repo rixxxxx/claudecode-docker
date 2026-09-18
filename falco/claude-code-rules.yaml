@@ -470,12 +470,40 @@
 #     any real, successfully-routed exfiltration attempt. See the DNS
 #     rule's comment for the fix and test_dns_query_to_routable_non_resolver_fires
 #     (new hard-assert test) for the live confirmation.
-#     STILL NEEDS, on a real Docker/eBPF host with the `monitoring`
-#     profile active:
-#       2. Ideally also confirm on an unpatched (pre-26.0.0/25.0.4/23.0.11)
-#          Docker Engine that the `dns:` override is what's actually doing
-#          the work here, not just an already-patched host -- not done
-#          this round, host's own Engine version wasn't checked.
+#     LIVE-VERIFIED 2026-09-18 (item 2, nested dind repro against a
+#     genuinely unpatched Docker Engine 23.0.6, well below the 23.0.11 fix):
+#     ran `docker:23.0.6-dind` (`--privileged`, throwaway, torn down after)
+#     with a custom entrypoint that installs `dnsmasq` bound to 127.0.0.53
+#     (forwarding to 1.1.1.1) and rewrites /etc/resolv.conf +
+#     /run/systemd/resolve/resolv.conf to mimic Ubuntu's systemd-resolved
+#     stub layout, BEFORE starting nested dockerd. Confirmed the simulation
+#     actually reached the vulnerable detection heuristic -- dockerd's own
+#     startup log said so explicitly: `detected 127.0.0.53 nameserver,
+#     assuming systemd-resolved, so using resolv.conf:
+#     /run/systemd/resolve/resolv.conf`. Then, on that nested engine, created
+#     an `internal: true` network (matching this repo's own) and a
+#     `python:3-alpine` container on it: WITHOUT any `dns:` override,
+#     `socket.gethostbyname('api.anthropic.com')` returned a real IP
+#     (`160.79.104.10`) -- the leak, live-confirmed on an actually-vulnerable
+#     engine, not just theorized from the advisory text. WITH `--dns
+#     1.1.1.1` (the same override docker-compose.yml's claude-code service
+#     uses), the identical call raised `socket.gaierror: [Errno -3] Try
+#     again` -- same EAI_AGAIN failure class as the real host's own
+#     "Temporary failure in name resolution" (different wording only because
+#     this test image is musl/Alpine-based, not glibc). Confirms the `dns:`
+#     override is what's actually closing the gap, not merely redundant with
+#     an already-patched host. First attempt hit an unrelated bug, not the
+#     CVE mechanism itself: the initial entrypoint script used a `cat <<EOF`
+#     heredoc whose closing `EOF` got indented by the terminal's line-
+#     continuation prompt, so bash never recognized the terminator -- the
+#     rest of the script (including `exec dockerd-entrypoint.sh dockerd`)
+#     was silently swallowed as literal file content instead of executed,
+#     and the container exited 0 with no dockerd ever starting. Fixed by
+#     using `printf` instead of a heredoc. No new script or docker-compose
+#     service was added to this repo for this -- one-off manual repro,
+#     torn down completely (`docker rm -f`, `docker rmi`) after; this
+#     comment is the durable record. Both open items under this CVE are now
+#     resolved.
 #
 # More candidates, from a second pass over public Falco-bypass research
 # (2026-09-14, sources: armosec/curing, MatheuZSecurity/Furtex,
