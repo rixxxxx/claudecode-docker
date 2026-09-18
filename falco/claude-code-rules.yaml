@@ -856,7 +856,6 @@
   condition: >
     claude_code_container
     and evt.type in (open, openat, openat2)
-    and evt.dir = <
     and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
     and fd.name contains "/.squid-claudecode-docker"
   output: >
@@ -875,7 +874,7 @@
     insufficient -- worth knowing about either way (defense-in-depth
     tripwire).
   condition: >
-    (evt.type = connect and evt.dir = <)
+    evt.type = connect
     and claude_code_container
     and fd.l4proto = tcp
     and fd.rport != 3128
@@ -968,7 +967,7 @@
     never succeed -- on this `internal: true` network the query has
     nowhere to go and should fail/time out.
   condition: >
-    (evt.type in (connect, sendto, sendmsg) and evt.dir = <)
+    evt.type in (connect, sendto, sendmsg)
     and claude_code_container
     and fd.l4proto = udp
     and fd.sport = 53
@@ -1264,7 +1263,7 @@
   desc: >
     claude-code attempted to contact the cloud instance metadata service.
   condition: >
-    (evt.type in (connect, sendto, sendmsg) and evt.dir = <)
+    evt.type in (connect, sendto, sendmsg)
     and claude_code_container
     and fd.sip = "169.254.169.254"
   output: >
@@ -1317,7 +1316,6 @@
     trying to evade those proc.name-based exclusions.
   condition: >
     evt.type = prctl
-    and evt.dir = <
     and claude_code_container
     and evt.arg.option = PR_SET_NAME
     and (evt.arg.arg2_str in (claude, node) or evt.arg.arg2_str = "Bun" or evt.arg.arg2_str startswith "Bun ")
@@ -1462,7 +1460,6 @@
     opening the credentials file itself.
   condition: >
     claude_code_container
-    and evt.dir = <
     and evt.type in (ptrace, process_vm_readv, process_vm_writev)
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
@@ -1554,7 +1551,6 @@
   condition: >
     claude_code_container
     and evt.type = socket
-    and evt.dir = <
     and evt.arg.domain in (2, AF_INET, PF_INET, 10, AF_INET6, PF_INET6)
     and (evt.arg.type = 3 or evt.arg.type = 524291)
     and not (claude_code_binary_exepath or node_binary_exepath)
@@ -1611,7 +1607,6 @@
     fail, but the attempt itself is the signal, not success.
   condition: >
     claude_code_container
-    and evt.dir = <
     and evt.type in (mount, umount2)
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
@@ -1767,7 +1762,6 @@
     fail here -- the attempt itself is the signal, not success.
   condition: >
     claude_code_container
-    and evt.dir = <
     and evt.type = unshare
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
@@ -1814,7 +1808,6 @@
   condition: >
     claude_code_container
     and evt.type in (open, openat, openat2)
-    and evt.dir = <
     and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
     and (fd.name contains "/uid_map" or fd.name contains "/setgroups")
     and not (claude_code_binary_exepath or node_binary_exepath)
@@ -1873,7 +1866,6 @@
     above), which are normal container-runtime activity, not an attack.
   condition: >
     claude_code_container
-    and evt.dir = <
     and evt.type = capset
     and not (proc.name startswith "runc:" and runc_own_exepath)
     and not (claude_code_binary_exepath or node_binary_exepath)
@@ -1904,13 +1896,20 @@
 # correctly, matching every other failing-syscall attempt rule in this
 # file (mount, umount2, unshare, capset).
 #
-# Written from the start without the deprecated `evt.dir = <` condition
-# (unlike the older rules above, which still have it and get a
-# LOAD_DEPRECATED_ITEM warning on load) -- Falco 0.44.1 dropped enter
-# events entirely, so `evt.dir = <` is always true and meaningless on
-# this version; no need to carry the now-pointless condition into a new
-# rule. Retrofitting the older rules is a separate cleanup, not done
-# here.
+# Written from the start without the deprecated `evt.dir = <` condition --
+# Falco 0.44.1 dropped enter events entirely, so `evt.dir = <` is always
+# true and meaningless on this version. DONE 2026-09-18: retrofitted every
+# older rule in this file that still carried it (11 rules: "Write attempt
+# to workspace Squid override", "Outbound connection from claude-code not
+# via egress-proxy", "DNS query bypassing embedded resolver", "Contact
+# cloud metadata service", "Process impersonating trusted name via prctl",
+# "Process memory access attempt", "Raw INET socket creation attempt",
+# "Mount or unmount attempt", "Unshare attempt", "Write attempt to uid_map
+# or setgroups", "Capset attempt") -- purely mechanical, no functional
+# change (the clause was always-true dead weight), just removes the
+# LOAD_DEPRECATED_ITEM schema warning noise on every security-monitor
+# startup. Verified via a full ./tests/security/test_falco_rules.sh run
+# after the removal, no regressions.
 #
 # `proc.name startswith "runc:"` excluded pre-emptively, matching both
 # the capset rule's own fix above and Falco's own upstream "Non sudo
