@@ -511,21 +511,28 @@
 # blog.ssrf.in "How to Bypass Falco" writeup, falcosecurity/falco security
 # advisories GHSA-rfgw-vmxp-hp5g/GHSA-6v9j-2vm2-ghf7/GHSA-7cq5-h4p2-h37p) --
 # relevance assessed against THIS repo's actual architecture, not generic:
-#   - io_uring (io_uring_setup/io_uring_enter/io_uring_register) --
-#     fundamental architectural blind spot: operations submitted via
-#     io_uring's shared ring buffer never hit the sys_enter_* tracepoints
-#     Falco's modern_ebpf driver hooks, so file access/writes/connects done
-#     this way are invisible regardless of which rule conditions exist.
-#     Not fixable by adding a rule -- needs Falco's KRSI-based io_uring
-#     plugin (falcosecurity/falco advisory GHSA-7cq5-h4p2-h37p, tracked
-#     upstream, not something this repo can build around on its own). No
-#     custom seccomp profile is set anywhere in this repo (confirmed via
-#     grep) -- claude-code runs Docker's default seccomp profile, whose
-#     io_uring syscall blocklist varies by Docker version on the host.
-#     Whether io_uring_setup even succeeds inside claude-code as currently
-#     configured is unverified -- check this FIRST before anything else in
-#     this entry, since if it's already blocked at the seccomp layer the
-#     rest is moot here.
+#   - DONE 2026-09-18: io_uring (io_uring_setup/io_uring_enter/
+#     io_uring_register) -- fundamental architectural blind spot in
+#     principle: operations submitted via io_uring's shared ring buffer
+#     never hit the sys_enter_* tracepoints Falco's modern_ebpf driver
+#     hooks, so file access/writes/connects done this way would be
+#     invisible regardless of which rule conditions exist -- not fixable
+#     by adding a rule, would need Falco's KRSI-based io_uring plugin
+#     (falcosecurity/falco advisory GHSA-7cq5-h4p2-h37p, tracked upstream).
+#     LIVE-VERIFIED the precondition this entry itself said to check
+#     first: a raw `io_uring_setup` syscall (via ctypes, SYS number 425 on
+#     x86_64, zeroed io_uring_params struct) from inside claude-code
+#     returns `EPERM` (errno 1) -- Docker's default seccomp profile blocks
+#     it here, same class of finding as the raw-socket and mount/unshare/
+#     capset entries above (closed by Docker's defaults, not by Falco or
+#     anything this repo configures -- no custom seccomp profile is set
+#     anywhere in this repo, confirmed via grep). Net effect: the
+#     architectural blind spot remains true in principle, but the actual
+#     attack precondition (creating a ring at all) does not hold in this
+#     container as currently configured, so this is not an active gap
+#     here -- same "confirmed closed by Docker defaults, defense-in-depth
+#     only for other configs" conclusion as the raw-socket entry, not
+#     independently re-argued.
 #   - proc.name-spoofing / path-pivot techniques cataloged in
 #     MatheuZSecurity/Furtex ("Axis B" of its Falco-specific bypasses) --
 #     same class of bug as the 2026-09-14 proc.pname="node"/"claude" fix
