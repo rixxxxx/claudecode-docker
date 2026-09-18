@@ -311,6 +311,29 @@ sync_stop_watcher_sidecar() {
     fi
 }
 
+# sync_egress_proxy_sidecar -- keeps egress-proxy's image in sync with
+# local Dockerfile.egress-proxy edits, same treatment as
+# sync_security_monitor_sidecar/sync_stop_watcher_sidecar above. Unlike
+# those two, called unconditionally (not just under a flag) -- egress-proxy
+# switched from a pulled `image: ubuntu/squid:latest` to a locally-built one
+# on 2026-09-18 (see Dockerfile.egress-proxy) for EVERY user, not just
+# --ssl-bump ones, so it needs the same stale-image protection every run.
+sync_egress_proxy_sidecar() {
+    local image_before image_after
+    image_before="$(image_id claude-code-egress-proxy:latest)"
+
+    echo "==> Rebuilding egress-proxy image (cached -- picks up local Dockerfile.egress-proxy/squid.conf changes)..."
+    docker compose build egress-proxy
+
+    image_after="$(image_id claude-code-egress-proxy:latest)"
+
+    if [ "$image_before" != "$image_after" ] \
+        && [ -n "$(docker compose ps -q egress-proxy 2>/dev/null)" ]; then
+        echo "==> egress-proxy image changed -- recreating so it picks up the new image..."
+        docker compose up -d --force-recreate egress-proxy
+    fi
+}
+
 main() {
     # docker compose auto-loads .env for its own ${...} interpolation, but
     # this script also needs HTTP_PROXY/HTTPS_PROXY/ENTERPRISE_PROXY_AUTH at
@@ -360,22 +383,46 @@ main() {
         echo "==> Enterprise proxy: chaining egress-proxy through proxy-auth (${ENTERPRISE_PROXY_AUTH})"
     fi
 
-    # --monitor is stripped out here (order-independent, works combined
-    # with --update) rather than handled inline below, since it toggles a
-    # Compose profile rather than delegating to another script. See
-    # docker-compose.yml's security-monitor service and AGENTS.md "Runtime
-    # monitoring".
+    # --monitor/--ssl-bump are stripped out here (order-independent, work
+    # combined with --update and each other) rather than handled inline
+    # below, since both toggle egress-proxy/Squid config rather than
+    # delegating to another script. See docker-compose.yml's
+    # security-monitor service and AGENTS.md "Runtime monitoring" for
+    # --monitor; squid.conf's "SSL Bump" comment and
+    # bin/generate-bump-ca.sh for --ssl-bump.
     local monitor_enabled=false
     local auto_stop_enabled=false
+    local ssl_bump_enabled=false
     local remaining_args=()
     for arg in "$@"; do
         if [ "$arg" = "--monitor" ]; then
             monitor_enabled=true
+        elif [ "$arg" = "--ssl-bump" ]; then
+            ssl_bump_enabled=true
         else
             remaining_args+=("$arg")
         fi
     done
     set -- "${remaining_args[@]}"
+
+    # --ssl-bump: generate the host's own bump CA if missing (no-op if it
+    # already exists -- see bin/generate-bump-ca.sh), then point all three
+    # of SQUID_HTTP_PORT_DIR/SQUID_SSLBUMP_DIR/SQUID_BUMP_CA_DIR at the
+    # real, enabled config instead of the tracked no-op placeholders
+    # docker-compose.yml falls back to otherwise (all three together --
+    # any one left at its default makes the other two inert, see
+    # squid.conf's own comment). Does NOT by itself rebuild claude-code --
+    # generate-bump-ca.sh prints that reminder the first time it actually
+    # generates a new CA; trusting the CA is a separate, explicit step
+    # (same "rotating means rebuilding" model as the enterprise-CA
+    # mechanism), not silently forced here.
+    if [ "$ssl_bump_enabled" = true ]; then
+        echo "==> SSL Bump: enabling path/query-level filtering on egress-proxy"
+        "$SCRIPT_DIR/generate-bump-ca.sh"
+        export SQUID_HTTP_PORT_DIR="$PROJECT_ROOT/.squid-http-port-sslbump"
+        export SQUID_SSLBUMP_DIR="$PROJECT_ROOT/.squid-sslbump-enabled"
+        export SQUID_BUMP_CA_DIR="$PROJECT_ROOT/.squid-bump-ca"
+    fi
 
     if [ "$monitor_enabled" = true ]; then
         compose_profile_args+=(--profile monitoring)
@@ -402,6 +449,7 @@ main() {
     fi
 
     sync_proxy_auth_sidecar
+    sync_egress_proxy_sidecar
 
     # Same reasoning as sync_proxy_auth_sidecar above, and previously only
     # wired into `cc-container --update` (via update-deps.sh) -- confirmed

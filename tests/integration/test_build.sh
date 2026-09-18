@@ -21,7 +21,31 @@ test_proxy_auth_image_builds() {
     assert_success "${COMPOSE[@]}" --profile enterprise-proxy build proxy-auth
 }
 
+test_egress_proxy_image_builds() {
+    assert_success "${COMPOSE[@]}" build egress-proxy
+}
+
+test_egress_proxy_ssl_bump_prereqs_available() {
+    # Regression guard for the 2026-09-18 finding (see
+    # Dockerfile.egress-proxy's own comments, README "TLS interception",
+    # AGENTS.md "SSL Bump support"): ubuntu/squid:latest doesn't ship
+    # security_file_certgen/ssl_crtd at all -- only fixed by installing
+    # squid-openssl on top. Turns "did that install actually work" from
+    # something you have to notice by eye in build output into a proper
+    # loud test failure. --no-cache is required here, not just belt-and-
+    # suspenders: a cached layer shows "CACHED" in build output, not the
+    # RUN step's own echo/warning text, so a plain cached build would
+    # silently miss a real regression.
+    local build_output
+    build_output="$("${COMPOSE[@]}" build --no-cache egress-proxy 2>&1)"
+    CURRENT_TEST="egress-proxy SSL Bump prerequisites (security_file_certgen) available after build"
+    assert_contains "$build_output" "SSL Bump cert-cache initialized." \
+        "if this fails, see the build output above for the real error (Dockerfile.egress-proxy's cert-cache step no longer suppresses stderr) -- squid-openssl's install or security_file_certgen -c itself needs debugging"
+}
+
 run_test test_claude_code_image_builds
 run_test test_proxy_auth_image_builds
+run_test test_egress_proxy_image_builds
+run_test test_egress_proxy_ssl_bump_prereqs_available
 
 print_summary

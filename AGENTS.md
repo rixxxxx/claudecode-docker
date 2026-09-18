@@ -41,6 +41,36 @@ That's the actual purpose of this repo, not incidental config.
   `.squid-claudecode-docker` overrides" below).
 - Never propose wildcard grants (`.com`, entire CDNs without reason) or
   `allow all` — that undermines the allowlist model.
+- `squid.conf`'s SSL Bump block (2026-09-18, see README "TLS interception")
+  must stay positioned BEFORE `http_access allow allowed_domains` — Squid's
+  `http_access` list is first-match-wins, same caveat
+  `falco/claude-code-rules.yaml` calls out for its own rules. A url-level
+  deny added via the `sslbump/*.conf` include only has any effect if it's
+  evaluated before the domain-level allow would otherwise let the request
+  through.
+- Any per-domain `urlpath_regex`-based restriction in
+  `.squid-sslbump-enabled/20-search-only.conf` (or a future file like it)
+  needs an explicit `http_access allow CONNECT <domain-acl>` line BEFORE
+  its path-conditional allow/deny pair. Root-caused live (2026-09-18, via
+  `debug_options 28,9` ACL tracing, confirmed against Squid's own
+  squid-users mailing list): `http_access` runs TWICE per bumped
+  connection -- once against the bare CONNECT (no HTTP path exists yet,
+  `urlpath_regex` can only return "indeterminate") and once against the
+  real decrypted request afterward. Without the CONNECT-allow, the
+  CONNECT-stage pass falls through to the domain's own unconditional
+  `deny` line (since the path-conditional `allow` can never match with no
+  path yet) and the bump never completes -- the working, real-path pass
+  never happens. The CONNECT-allow only unblocks the bump itself (method
+  CONNECT never satisfies it for the real decrypted GET/POST that
+  follows), it grants no path access on its own -- see
+  `20-search-only.conf`'s own header comment for the full writeup, worth
+  reading before adding a new domain-restricted rule here.
+- `.squid-bump-ca/` (gitignored, `bin/generate-bump-ca.sh`) holds this
+  host's real SSL-Bump CA private key. Never commit it, never copy its
+  contents into `certs/` wholesale (only the already-synced
+  `certs/egress-proxy-bump-ca.crt` public half belongs there, and that's
+  also gitignored) — unlike a shared enterprise CA, this key lets its
+  holder MITM anything trusting it, and it's meant to be host-unique.
 - Don't remove `internal: true` on the `internal` network in
   `docker-compose.yml` — that's the mechanism that removes the default
   internet route from the `claude-code` container.
@@ -143,6 +173,77 @@ code:
   doubled-backslash requirement directly (`DOMAIN\\username`) right after
   the "no URL-encoding needed" note, instead of leaving that note
   misleading on its own.
+
+## SSL Bump support (optional)
+
+`egress-proxy` can decrypt already-allowed-domain HTTPS traffic to filter
+on path/query, not just domain — see README "TLS interception" for the
+user-facing setup. Mechanics, for anyone touching this code:
+
+- Unlike enterprise-proxy chaining (rendered fresh every run into
+  gitignored `.squid-upstream-proxy/`), the SSL-Bump CA is generated
+  **once, persisted, and only rotated on demand** — a bump CA regenerated
+  on every `docker compose up` would desync from `claude-code`'s
+  build-time-baked trust (see `Dockerfile`'s `COPY certs/` +
+  `update-ca-certificates` block) on every single run, forcing a rebuild
+  every time. `bin/generate-bump-ca.sh` is idempotent for exactly this
+  reason.
+- Three env vars `bin/cc-container --ssl-bump` sets together, all
+  defaulting to tracked no-op placeholders otherwise (same
+  `.squid-empty`-style fallback idiom as `SQUID_WORKSPACE_DIR`/
+  `SQUID_UPSTREAM_PROXY_DIR`) -- any one left at its default makes the
+  other two inert: `SQUID_HTTP_PORT_DIR` (whether the listener even has
+  SSL-Bump capability at all -- `.squid-http-port-plain/` = off, the
+  exact original `http_port 3128`), `SQUID_SSLBUMP_DIR` (whether bumping
+  actually happens once the listener supports it -- `.squid-empty` = off,
+  zero `ssl_bump` directives at all), and `SQUID_BUMP_CA_DIR` (which
+  keypair the SSL-Bump listener signs with -- the tracked
+  `.squid-empty-bump-ca/` placeholder by default). `SQUID_HTTP_PORT_DIR`
+  was split out from `SQUID_SSLBUMP_DIR` after an early version put
+  `ssl-bump` unconditionally on the default `http_port` line and broke
+  default (non-ssl-bump) users -- see the confirmed-broken note below for
+  the incident this bullet is a fix for.
+- `egress-proxy` itself switched from a pulled `image: ubuntu/squid:latest`
+  to a locally built one (`Dockerfile.egress-proxy`) for **every** user,
+  not just `--ssl-bump` ones — solely to pre-initialize Squid's
+  `security_file_certgen` cache at build time. `sync_egress_proxy_sidecar()`
+  in `bin/cc-container` is therefore called unconditionally (same
+  stale-image protection as `sync_security_monitor_sidecar`/
+  `sync_proxy_auth_sidecar`), not gated behind the flag.
+- **Root-caused and live-verified working, 2026-09-18** (see README "TLS
+  interception" Status note and `falco/claude-code-rules.yaml` OPEN ITEMS
+  "Third pass"): a real `docker compose build egress-proxy` against
+  `ubuntu/squid:latest` first showed `security_file_certgen`/`ssl_crtd`
+  missing entirely -- not a theoretical gap, an actual build-log finding,
+  and this is what led to the `SQUID_HTTP_PORT_DIR` split above (an
+  earlier version put `ssl-bump` unconditionally on the default
+  `http_port` line, which broke `egress-proxy`'s healthcheck -- and
+  therefore every service depending on it -- for every user, not just
+  `--ssl-bump` ones, the moment this gap surfaced). Root cause:
+  Debian/Ubuntu ship Squid as two mutually-exclusive packages from the
+  same source -- `squid` (GnuTLS, what `ubuntu/squid:latest` installs, no
+  SSL-Bump) and `squid-openssl` (OpenSSL-linked, has
+  `security_file_certgen`). `Dockerfile.egress-proxy` installs
+  `squid-openssl` on top (soft-fail if apt/dpkg aren't fully present on
+  this Rockcraft/chisel-built base image -- see that Dockerfile's own
+  comment). Getting from "package installs" to "actually works" took two
+  more real, live-caught bugs, both fixed against actual build/runtime
+  output rather than guessed: `security_file_certgen` lives at
+  `/usr/lib/squid/`, not on `$PATH` (a `command -v`-only lookup silently
+  found nothing -- fixed by checking the known libexec-style paths
+  directly, `command -v` only as a fallback), and the cert-cache directory
+  has to sit at Squid's own default `/var/spool/squid/ssl_db` --
+  initializing it anywhere else (an earlier version used
+  `/var/lib/squid/ssl_db`) crash-loops Squid at startup with
+  "Uninitialized SSL certificate database directory", since
+  `generate-host-certificates=on` never explicitly configures
+  `sslcrtd_program`/`sslcrtd_children`, relying on Squid's own compiled-in
+  default path instead. A separate, unrelated bug in
+  `.squid-sslbump-enabled/10-bump.conf` was caught the same way: Squid's
+  `acl ... urlpath_regex` treats a *quoted* pattern as a filename to load
+  from, not an inline regex, silently producing an empty (never-matching)
+  ACL. `TEST_SSL_BUMP=1 tests/integration/test_ssl_bump.sh` now passes all
+  four checks against a real build.
 
 ## Runtime monitoring
 

@@ -89,9 +89,25 @@ services:
     restart: unless-stopped
 
   egress-proxy:
-    image: ubuntu/squid:latest
+    # Custom-built as of 2026-09-18 (was image: ubuntu/squid:latest) --
+    # see Dockerfile.egress-proxy's own header for why (pre-initializing
+    # Squid's SSL Bump cert-generation cache at build time). Everything
+    # about default (non-ssl-bump) behavior is unchanged; this only adds a
+    # one-time, cached build step in place of a pull.
+    build:
+      context: .
+      dockerfile: Dockerfile.egress-proxy
+    image: claude-code-egress-proxy:latest
     volumes:
       - ./squid.conf:/etc/squid/squid.conf:ro
+      # The http_port listener itself, swappable (2026-09-18, see
+      # squid.conf's own comment): .squid-http-port-plain/ (default --
+      # exactly the original "http_port 3128", no SSL Bump capability) vs.
+      # .squid-http-port-sslbump/ (`cc-container --ssl-bump`). Kept
+      # separate from SQUID_SSLBUMP_DIR below so a host where Squid's own
+      # SSL Bump support doesn't work can't be affected unless it actually
+      # opts in.
+      - ${SQUID_HTTP_PORT_DIR:-./.squid-http-port-plain}:/etc/squid/conf.d/http-port:ro
       - ./.squid-claudecode-docker:/etc/squid/conf.d/defaults:ro
       - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/etc/squid/conf.d/workspace:ro
       # Enterprise proxy chaining: rendered by bin/cc-container from
@@ -103,6 +119,23 @@ services:
       # cc-container) -- an empty/missing directory here can otherwise make
       # Squid's include match zero files and fail to start.
       - ${SQUID_UPSTREAM_PROXY_DIR:-./.squid-empty}:/etc/squid/conf.d/upstream:ro
+      # SSL Bump (2026-09-18, opt-in -- see squid.conf's own "SSL Bump"
+      # comment and bin/generate-bump-ca.sh). SQUID_SSLBUMP_DIR toggles
+      # whether bumping is actually enabled: the tracked .squid-empty/
+      # placeholder (default, off -- zero ssl_bump directives at all, same
+      # no-op fallback as the other optional includes above) vs.
+      # .squid-sslbump-enabled (set by `cc-container --ssl-bump`, together
+      # with SQUID_HTTP_PORT_DIR above -- one without the other is inert).
+      # SQUID_BUMP_CA_DIR provides the cert=/key= keypair the SSL-Bump
+      # http_port variant needs to start: the tracked
+      # .squid-empty-bump-ca/ placeholder by default (a real but
+      # never-trusted, never-used-to-sign keypair -- see that directory's
+      # README; irrelevant when SQUID_HTTP_PORT_DIR is also at its default,
+      # since then no listener even references this path), or the real
+      # host-generated CA (bin/generate-bump-ca.sh, gitignored) once
+      # ssl-bump is enabled.
+      - ${SQUID_SSLBUMP_DIR:-./.squid-empty}:/etc/squid/conf.d/sslbump:ro
+      - ${SQUID_BUMP_CA_DIR:-./.squid-empty-bump-ca}:/etc/squid/bump-ca:ro
     networks:
       - internal
       - external

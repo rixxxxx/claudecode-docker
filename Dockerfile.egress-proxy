@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1
+#
+# egress-proxy, custom-built (2026-09-18) instead of the previous stock
+# ubuntu/squid:latest image, to get SSL Bump (TLS interception) support --
+# see squid.conf's own "SSL Bump" comment for why this exists and the
+# opt-in mechanism (bin/cc-container --ssl-bump / bin/generate-bump-ca.sh).
+# ENTRYPOINT/CMD are deliberately left untouched (inherited from the base
+# image) rather than reimplemented, to avoid diverging from whatever
+# startup behavior upstream ubuntu/squid actually relies on -- this image
+# only adds a package on top, doesn't replace the base's own setup.
+FROM ubuntu/squid:latest
+
+# ROOT CAUSE, confirmed via research (2026-09-18, see README "TLS
+# interception" Limitations / AGENTS.md "SSL Bump support" for the full
+# writeup): Debian/Ubuntu ship Squid as two mutually-exclusive package
+# flavors built from the same source -- `squid` (GnuTLS, no SSL-Bump
+# capability at all) and `squid-openssl` (OpenSSL-linked, has
+# security_file_certgen and ssl-bump support). ubuntu/squid:latest
+# installs the plain `squid` package -- confirmed via a real build that
+# security_file_certgen/ssl_crtd exist at none of the usual paths on it.
+# The two packages Conflict/Replace each other (same binaries via
+# update-alternatives), so this installs squid-openssl ON TOP, letting
+# apt/dpkg handle the swap.
+#
+# One RUN instruction, not two: install + cert-cache init used to be
+# separate RUN steps, which looked like it hit a Docker build-cache
+# inconsistency across rebuilds (one run found nothing where an earlier
+# one had succeeded, with no source change to the install step) -- merged
+# into one atomic step to rule that out as a variable. Turned out to be a
+# red herring: see the `command -v` note below for the real, reproducible
+# cause, confirmed the same way on every subsequent run once actually
+# looked for correctly.
+#
+# `command -v security_file_certgen` alone does NOT find it (confirmed
+# live, repeatably, immediately after a successful squid-openssl install
+# -- this is what looked like a caching mystery at first, see above):
+# Debian/Ubuntu's squid packaging installs Squid's helper binaries under
+# /usr/lib/squid/, which is not on $PATH -- `command -v` only searches
+# $PATH, so it will never find them there regardless of whether the file
+# exists. An earlier version of this step DID check
+# /usr/lib/squid/security_file_certgen directly, but that check was made
+# (and failed) against the wrong package (plain `squid`, before switching
+# to `squid-openssl`) and got removed when rewritten around `command -v`
+# -- reinstated below, combined with `command -v` as a fallback for other
+# possible layouts, instead of relying on either alone.
+#
+# Soft failure (not `set -e`-fatal): ubuntu/squid:latest is
+# Rockcraft/chisel-built (per Docker Hub's own image description), which
+# sometimes means apt/dpkg themselves aren't fully present in a final
+# image -- if this step can't run at all for that reason, default
+# (non-ssl-bump) users' builds must still succeed unaffected, with a loud
+# warning instead of a silent no-op or a build failure that blocks
+# everyone over an ssl-bump-only feature.
+#
+# security_file_certgen initializes an on-disk cache directory of
+# dynamically-generated per-site leaf certificates (NOT the CA itself --
+# that's bind-mounted separately at runtime, see squid.conf's cert=/key=
+# and docker-compose.yml's SQUID_BUMP_CA_DIR). Safe and meaningful to do
+# at build time since it's pure directory-structure initialization with
+# no runtime secrets involved -- only actually exercised once SSL Bump is
+# enabled (SQUID_HTTP_PORT_DIR/SQUID_SSLBUMP_DIR both switched to their
+# "on" values, see docker-compose.yml); harmless no-op otherwise (default
+# users never reference /var/spool/squid/ssl_db at all, since the default
+# http_port has no ssl-bump option -- see squid.conf). Path confirmed via
+# a real runtime failure (not guessed): Squid's own sslcrtd_program
+# default, used implicitly by `generate-host-certificates=on` on the
+# http_port line (squid.conf never overrides `sslcrtd_program`/
+# `sslcrtd_children` explicitly), looks in /var/spool/squid/ssl_db -- an
+# earlier version of this step initialized /var/lib/squid/ssl_db instead,
+# which crash-looped Squid at startup with "Uninitialized SSL certificate
+# database directory".
+RUN if apt-get update 2>/dev/null && apt-get install -y --no-install-recommends squid-openssl 2>&1; then \
+        echo "squid-openssl installed."; \
+    else \
+        echo "WARNING: could not install squid-openssl (apt/dpkg may not be available on this base image -- see this Dockerfile's own comment) -- SSL Bump (bin/cc-container --ssl-bump) will likely NOT work until this is fixed. Default, non-ssl-bump usage is unaffected."; \
+    fi; \
+    CERTGEN=""; \
+    for candidate in \
+        /usr/lib/squid/security_file_certgen /usr/lib/squid/ssl_crtd \
+        /usr/lib/squid6/security_file_certgen /usr/libexec/squid/security_file_certgen \
+        "$(command -v security_file_certgen 2>/dev/null)" "$(command -v ssl_crtd 2>/dev/null)"; \
+    do \
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then CERTGEN="$candidate"; break; fi; \
+    done; \
+    echo "Resolved SSL-Bump cert-cache generator: ${CERTGEN:-<none found>}"; \
+    if [ -n "$CERTGEN" ] && "$CERTGEN" -c -s /var/spool/squid/ssl_db -M 4MB; then \
+        chown -R proxy:proxy /var/spool/squid/ssl_db || true; \
+        echo "SSL Bump cert-cache initialized."; \
+    else \
+        echo "WARNING: SSL-Bump cert-cache initialization failed (see command output above for the real reason) -- SSL Bump (bin/cc-container --ssl-bump) will NOT work until this is fixed. Default, non-ssl-bump usage is unaffected."; \
+    fi

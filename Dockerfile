@@ -26,7 +26,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # (confirmed: it isn't). Trust an optional corporate root CA (for
 # TLS-intercepting proxies) right after -- certs/ is empty by default, so
 # update-ca-certificates is a no-op for the normal build. Both must run as
-# root, before USER claudecode below (see AGENTS.md).
+# root, before USER claudecode below (see AGENTS.md). Same mechanism also
+# picks up certs/egress-proxy-bump-ca.crt when present (bin/generate-bump-ca.sh,
+# gitignored -- see README "TLS interception") -- no separate trust path
+# needed for this repo's own SSL-Bump CA.
 RUN --mount=type=secret,id=http_proxy,env=HTTP_PROXY \
     --mount=type=secret,id=https_proxy,env=HTTPS_PROXY \
     --mount=type=secret,id=no_proxy,env=NO_PROXY \
@@ -175,9 +178,15 @@ with open(p) as f:
     s = json.load(f)
 s['statusLine'] = {'type': 'command', 'command': 'python3 /home/claudecode/.claude/statusline.py'}
 s.setdefault('permissions', {})
-deny = set(s['permissions'].get('deny', []))
-deny.update(['WebFetch', 'WebSearch'])
-s['permissions']['deny'] = sorted(deny)
+# ask, not deny (2026-09-18): now that egress-proxy has SSL Bump for
+# path-level filtering (see squid.conf) and a curated reference-domain
+# allowlist, WebFetch/WebSearch require interactive per-use approval
+# instead of being fully removed from context. The read-only lockdown
+# below still applies -- a compromised session can't silently rewrite this
+# back to "allow".
+ask = set(s['permissions'].get('ask', []))
+ask.update(['WebFetch', 'WebSearch'])
+s['permissions']['ask'] = sorted(ask)
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
 EOF

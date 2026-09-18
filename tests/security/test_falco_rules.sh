@@ -926,17 +926,20 @@ test_forceful_git_push_fires() {
 }
 
 test_global_settings_permissions_configured() {
-    # Structural check for the Dockerfile-baked deny list (see
+    # Structural check for the Dockerfile-baked permission list (see
     # falco/claude-code-rules.yaml OPEN ITEMS "Third pass" and Dockerfile's
     # settings.json-merge step) -- WebFetch/WebSearch are server-side tools
-    # invisible to this repo's entire network sandbox, so denying them via
-    # permissions is the only control point, not a Falco rule. Independent
-    # of the Falco/monitoring pipeline, same as test_claude_exe_path_anchor_current
-    # above.
+    # invisible to this repo's entire network sandbox, so gating them via
+    # permissions is the only control point, not a Falco rule. `ask`, not
+    # `deny`, as of 2026-09-18 (see that OPEN ITEMS entry) -- SSL Bump +
+    # the reference-domain allowlist made supervised access acceptable.
+    # Independent of the Falco/monitoring pipeline, same as
+    # test_claude_exe_path_anchor_current above.
     local settings
     settings="$("${COMPOSE[@]}" exec -T claude-code cat /home/claudecode/.claude/settings.json 2>/dev/null)"
-    assert_contains "$settings" "WebFetch" "settings.json denies WebFetch"
-    assert_contains "$settings" "WebSearch" "settings.json denies WebSearch"
+    assert_contains "$settings" '"ask"' "settings.json has an ask list"
+    assert_contains "$settings" "WebFetch" "settings.json gates WebFetch"
+    assert_contains "$settings" "WebSearch" "settings.json gates WebSearch"
 }
 
 test_write_attempt_to_global_settings_fires() {
