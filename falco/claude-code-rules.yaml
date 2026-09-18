@@ -533,13 +533,50 @@
 #     here -- same "confirmed closed by Docker defaults, defense-in-depth
 #     only for other configs" conclusion as the raw-socket entry, not
 #     independently re-argued.
-#   - proc.name-spoofing / path-pivot techniques cataloged in
-#     MatheuZSecurity/Furtex ("Axis B" of its Falco-specific bypasses) --
+#   - DONE 2026-09-18: proc.name-spoofing / path-pivot techniques cataloged
+#     in MatheuZSecurity/Furtex ("Axis B" of its Falco-specific bypasses) --
 #     same class of bug as the 2026-09-14 proc.pname="node"/"claude" fix
-#     above (found independently via BlackBerry's older writeup), Furtex
-#     just catalogs many more instances of it. Worth a systematic sweep of
-#     every proc.name/proc.pname-based exclusion left in this file for the
-#     same pattern, not just the two already fixed.
+#     above (found independently via BlackBerry's older writeup). Did the
+#     systematic sweep this entry called for: manually categorized all 46
+#     proc.name/proc.pname/proc.aname occurrences in this file (rule
+#     conditions and historical comments alike). Findings:
+#       - Two genuine, unfixed instances of the exact same bug shape found
+#         and fixed, matching the 2026-09-14 pattern (name-only exclusion,
+#         no exepath backing): "Environment variables read from proc"
+#         (`proc_inspection_binaries` list -- ps/top/htop/pgrep/pidof --
+#         had no exepath check at all; an attacker binary renamed to `ps`
+#         would have read /proc/*/environ, including ANTHROPIC_API_KEY,
+#         completely undetected) and the `proc.name startswith "runc:"`
+#         exclusion shared by the "Capset attempt" and "Setuid or
+#         setresuid called directly" rules (same undetected-impersonation
+#         shape, just for those two syscalls instead of a file read). Both
+#         fixed the same way as the original 2026-09-14 fix -- AND, not OR,
+#         with a real exepath: see `proc_inspection_binary_trusted` and
+#         `runc_own_exepath` macros above (real paths live-verified on this
+#         image, not guessed: ps=/usr/bin/ps, top=/usr/bin/top,
+#         pgrep=/usr/bin/pgrep, pidof=/usr/sbin/killall5 via symlink,
+#         runc=/usr/bin/runc -- htop confirmed NOT installed on this image,
+#         so deliberately left with no exepath entry, meaning it fails
+#         closed if it's ever added later without updating the macro too).
+#         Regression tests: test_env_read_from_proc_catches_renamed_impersonator
+#         and test_setuid_excludes_only_real_runc in
+#         tests/security/test_falco_rules.sh.
+#       - Everything else using proc.name/proc.pname turned out to be a
+#         POSITIVE detection match (e.g. "Privilege escalation attempt"'s
+#         `proc.name in (sudo, su, pkexec, doas)`, "Network tool executed
+#         during npm install"'s tool/ancestor lists, "Mount or umount
+#         binary executed"'s `proc.name in (mount, umount)`, "Unexpected
+#         shell"'s own trigger clause), not a whitelist exclusion -- a
+#         fundamentally different risk (an attacker renaming their tool to
+#         evade a denylist match, not spoofing their way past an allowlist)
+#         that isn't fixable by adding an exepath requirement, since there's
+#         no single trusted path to anchor a detection-positive to.
+#         Deliberately not changed; noted here so this reads as "considered,
+#         not applicable" rather than an oversight.
+#       - Everything already gated via claude_code_binary_exepath/
+#         node_binary_exepath/_pexepath (the original 2026-09-14 fix and
+#         everything modeled on it since) re-confirmed correct on
+#         re-reading, no change needed.
 #   - Furtex's BPF-map-manipulation/EDR-evasion axis -- lower relevance to
 #     THIS architecture specifically than generically advertised:
 #     security-monitor runs in a separate container with its own elevated
@@ -673,6 +710,29 @@
 
 - macro: node_binary_pexepath
   condition: (proc.pexepath = /usr/local/bin/node)
+
+# Added 2026-09-18 (proc.name-spoofing sweep -- see OPEN ITEMS "More
+# candidates" for the full writeup): the capset and setuid/setresuid rules
+# below both exclude runc's own internal capability-transition calls during
+# container/exec setup via `proc.name startswith "runc:"` alone -- the same
+# name-only-exclusion shape already fixed twice elsewhere in this file
+# (2026-09-14), just not yet applied here. LIVE-VERIFIED 2026-09-18 via a
+# throwaway DEBUG rule dumping proc.exepath for every live `runc:[N:STAGE]`
+# process spawned by a real `docker compose exec`: consistently
+# `exepath=/usr/bin/runc` across both the `[2:INIT]` and `[1:CHILD]` stages
+# -- the standard install path for Docker CE's bundled containerd.io/runc
+# package on Debian/Ubuntu (this repo's target platform, per e.g. the DNS
+# rule's systemd-resolved-at-127.0.0.53 "Ubuntu's default" note elsewhere).
+# Unlike claude.exe/node above, this path is host-runtime-provided, not
+# something this repo's own Dockerfile controls -- on a host where runc is
+# installed elsewhere (non-Debian/Ubuntu, or a nonstandard install), this
+# macro won't match and the exclusion will correctly fail closed, causing a
+# loud false positive on that host's own legitimate runc internals rather
+# than silently reopening the name-spoofing gap -- same accepted trade-off
+# as the claude.exe path's own "silent drift becomes a loud failure"
+# philosophy (see that macro's comment above), not a new risk category.
+- macro: runc_own_exepath
+  condition: (proc.exepath = /usr/bin/runc)
 #
 # Deliberately placed here, BEFORE "Unexpected shell" below, instead of
 # near the other history rules further down. Confirmed live 2026-09-13
@@ -1150,6 +1210,33 @@
 - list: proc_inspection_binaries
   items: [ps, top, htop, pgrep, pidof]
 
+# Hardened 2026-09-18 (proc.name-spoofing sweep -- see OPEN ITEMS "More
+# candidates" for the full writeup): the exclusion above used to be
+# `not proc.name in (proc_inspection_binaries)` alone, the exact same
+# name-only-exclusion shape already fixed twice for "Unexpected shell" and
+# "Non-Claude read of ~/.claude credentials" (2026-09-14) -- an attacker
+# binary renamed to `ps` and reading /proc/*/environ would have evaded this
+# rule entirely, undetected, while stealing ANTHROPIC_API_KEY or other
+# secrets passed via container environment variables. Real install paths
+# confirmed live on this image (`readlink -f "$(command -v <bin>)"` inside
+# claude-code, 2026-09-18): ps=/usr/bin/ps, top=/usr/bin/top,
+# pgrep=/usr/bin/pgrep, pidof=/usr/bin/pidof (itself a symlink to
+# /usr/sbin/killall5, resolved through) -- all separate real ELF binaries
+# (confirmed via distinct file sizes in `ls -la`, not a shared busybox
+# multi-call binary). htop is NOT installed on this image (`command -v
+# htop` exits 127) -- kept in the name list above anyway (harmless,
+# documents an expected legitimate tool name) but deliberately has no
+# corresponding exepath entry below: if htop is ever added to the image
+# later without updating this list too, the AND below means it will NOT be
+# excluded (fails toward a loud false positive instead of silently
+# reopening the gap) -- same fail-closed philosophy as the
+# claude_code_binary_exepath maintenance-trap note above.
+- list: proc_inspection_binary_exepaths
+  items: [/usr/bin/ps, /usr/bin/top, /usr/bin/pgrep, /usr/sbin/killall5]
+
+- macro: proc_inspection_binary_trusted
+  condition: (proc.name in (proc_inspection_binaries) and proc.exepath in (proc_inspection_binary_exepaths))
+
 - rule: Environment variables read from proc in claude-code
   desc: >
     A process read another process's environment variables via
@@ -1158,7 +1245,7 @@
     open_read
     and claude_code_container
     and fd.name glob /proc/*/environ
-    and not proc.name in (proc_inspection_binaries)
+    and not proc_inspection_binary_trusted
   output: >
     Environment variables read from /proc in claude-code
     (file=%fd.name command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
@@ -1788,7 +1875,7 @@
     claude_code_container
     and evt.dir = <
     and evt.type = capset
-    and not proc.name startswith "runc:"
+    and not (proc.name startswith "runc:" and runc_own_exepath)
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Capset attempt in claude-code
@@ -1850,7 +1937,7 @@
   condition: >
     claude_code_container
     and evt.type in (setuid, setresuid)
-    and not proc.name startswith "runc:"
+    and not (proc.name startswith "runc:" and runc_own_exepath)
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >
     Setuid or setresuid called directly in claude-code

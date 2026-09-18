@@ -310,6 +310,32 @@ test_ps_aux_does_not_false_positive() {
     assert_alert_absent "$checkpoint" "Environment variables read from /proc in claude-code" 5
 }
 
+test_env_read_from_proc_catches_renamed_impersonator() {
+    # Regression test for the 2026-09-18 proc.name-spoofing fix (see
+    # falco/claude-code-rules.yaml's proc_inspection_binary_trusted macro
+    # comment): before the fix, the exclusion was
+    # `not proc.name in (proc_inspection_binaries)` alone -- any binary
+    # simply named "ps" (regardless of its real executable) was silently
+    # excluded, letting an attacker steal ANTHROPIC_API_KEY/other secrets
+    # via /proc/*/environ undetected just by naming their tool "ps".
+    # /tmp/ps here is a copy of python3 -- not the real /usr/bin/ps --
+    # reading /proc/self/environ directly. (NOT /bin/cat: this image's
+    # `cat` turned out to be a coreutils multi-call binary that dispatches
+    # on its own argv[0] -- copied to /tmp/ps and invoked as `ps`, it
+    # printed "coreutils: unknown program 'ps'" and exited without ever
+    # opening the file, which is why an earlier version of this test using
+    # /bin/cat silently failed to trigger anything at all. python3 has no
+    # such argv[0] dispatch, confirmed working under a renamed invocation
+    # already by test_setuid_excludes_only_real_runc.)
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'cp "$(command -v python3)" /tmp/ps && chmod +x /tmp/ps' >/dev/null 2>&1
+    "${COMPOSE[@]}" exec -T claude-code /tmp/ps -c \
+        "open('/proc/self/environ', 'rb').read()" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Environment variables read from /proc in claude-code" 15
+    "${COMPOSE[@]}" exec -T claude-code rm -f /tmp/ps >/dev/null 2>&1 || true
+}
+
 test_cloud_metadata_contact_attempt() {
     # Must bypass egress-proxy explicitly (same pattern as
     # test_runtime_hardening.sh's test_direct_network_bypass_fails):
@@ -731,6 +757,28 @@ libc.setresuid(0, 0, 0)" >/dev/null 2>&1
     assert_alert_seen "$checkpoint" "Setuid or setresuid called directly in claude-code" 15
 }
 
+test_setuid_excludes_only_real_runc() {
+    # Regression test for the 2026-09-18 proc.name-spoofing fix (see
+    # falco/claude-code-rules.yaml's runc_own_exepath macro comment, shared
+    # by both the capset and setuid/setresuid rules): before the fix, the
+    # exclusion was `not proc.name startswith "runc:"` alone -- any process
+    # simply named that way (regardless of its real executable) was
+    # silently excluded, letting an attacker's own privilege-escalation
+    # attempt evade this rule just by naming itself like a runc internal
+    # stage. /tmp/runc:[1:CHILD] here is a copy of python3 -- not the real
+    # /usr/bin/runc -- calling setuid() directly, same trigger as
+    # test_setuid_setresuid_attempt_fires.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'cp "$(command -v python3)" "/tmp/runc:[1:CHILD]" && chmod +x "/tmp/runc:[1:CHILD]"' >/dev/null 2>&1
+    "${COMPOSE[@]}" exec -T claude-code "/tmp/runc:[1:CHILD]" -c \
+        "import ctypes
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+libc.setuid(0)" >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Setuid or setresuid called directly in claude-code" 15
+    "${COMPOSE[@]}" exec -T claude-code rm -f "/tmp/runc:[1:CHILD]" >/dev/null 2>&1 || true
+}
+
 test_fileless_execution_via_memfd_fires() {
     # New 2026-09-15: next item after capset in OPEN ITEMS "Candidate
     # future rules". Unlike every other item closed this session,
@@ -860,6 +908,7 @@ run_test test_network_tool_during_npm_install
 run_test test_npm_lifecycle_scripts_disabled_by_default
 run_test test_env_read_from_proc
 run_test test_ps_aux_does_not_false_positive
+run_test test_env_read_from_proc_catches_renamed_impersonator
 run_test test_cloud_metadata_contact_attempt
 run_test test_privilege_escalation_attempt
 run_test test_prctl_impersonation_fires
@@ -878,6 +927,7 @@ run_test test_unshare_attempt_fires
 run_test test_uid_map_write_attempt_fires
 run_test test_capset_attempt_fires
 run_test test_setuid_setresuid_attempt_fires
+run_test test_setuid_excludes_only_real_runc
 run_test test_fileless_execution_via_memfd_fires
 run_test test_dns_query_bypassing_resolver_fires
 run_test test_dns_query_to_routable_non_resolver_fires
