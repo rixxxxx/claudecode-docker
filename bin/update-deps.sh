@@ -176,10 +176,17 @@ if [ -z "$UBUNTU_ID_BEFORE" ] || [ "$UBUNTU_ID_BEFORE" != "$UBUNTU_ID_AFTER" ]; 
 fi
 
 EGRESS_BEFORE="$(egress_proxy_digest)"
-docker compose pull egress-proxy
-EGRESS_TAG_ID_AFTER="$(image_id "ubuntu/squid:latest")"
-if [ -n "$EGRESS_TAG_ID_AFTER" ] && [ "$EGRESS_TAG_ID_AFTER" != "$EGRESS_BEFORE" ]; then
-    REBUILD_REASONS+=("egress-proxy image updated upstream")
+# egress-proxy is locally built (Dockerfile.egress-proxy, FROM
+# ubuntu/squid:latest) as of 2026-09-18, not pulled directly anymore --
+# `docker compose pull egress-proxy` would try to pull the local-only
+# claude-code-egress-proxy:latest name and fail with "pull access denied".
+# Check its actual upstream base image instead, same pattern as the Ubuntu
+# base-image check above.
+EGRESS_BASE_ID_BEFORE="$(image_id "ubuntu/squid:latest")"
+docker pull -q ubuntu/squid:latest >/dev/null 2>&1 || true
+EGRESS_BASE_ID_AFTER="$(image_id "ubuntu/squid:latest")"
+if [ -z "$EGRESS_BASE_ID_BEFORE" ] || [ "$EGRESS_BASE_ID_BEFORE" != "$EGRESS_BASE_ID_AFTER" ]; then
+    REBUILD_REASONS+=("egress-proxy base image (ubuntu/squid:latest) has a newer layer available")
     CACHE_SAFE=false
 fi
 
