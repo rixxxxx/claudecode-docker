@@ -174,9 +174,33 @@ p = '/home/claudecode/.claude/settings.json'
 with open(p) as f:
     s = json.load(f)
 s['statusLine'] = {'type': 'command', 'command': 'python3 /home/claudecode/.claude/statusline.py'}
+s.setdefault('permissions', {})
+deny = set(s['permissions'].get('deny', []))
+deny.update(['WebFetch', 'WebSearch'])
+s['permissions']['deny'] = sorted(deny)
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
 EOF
+
+# Locks the deny list above against being edited back out from inside a
+# compromised/prompt-injected session: WebFetch/WebSearch are server-side
+# tools whose actual outbound request is made by Anthropic's backend, not by
+# any process in this container's network namespace -- invisible to both
+# egress-proxy's domain allowlist and Falco (see falco/claude-code-rules.yaml
+# OPEN ITEMS "Third pass" for the full writeup), so the permissions.deny
+# above is the only control point that closes this gap, and it only works if
+# claudecode (UID 1000, the same user a compromised session runs as) can't
+# just rewrite it. Same "sandboxed UID can read, not write" pattern already
+# used for /workspace/.squid-claudecode-docker (see docker-compose.yml).
+# settings.json only holds build-time config (hooks/statusLine/theme/
+# permissions) -- confirmed nothing later in this Dockerfile or
+# entrypoint.sh writes to it -- so dropping its write bits doesn't break
+# normal operation; per-session state lives in ~/.claude.json instead, which
+# stays writable.
+USER root
+RUN chown root:root /home/claudecode/.claude/settings.json \
+    && chmod 644 /home/claudecode/.claude/settings.json
+USER claudecode
 
 # Create directories for persistent config
 RUN mkdir -p /home/claudecode/.config/claudecode /home/claudecode/.local/share/claudecode

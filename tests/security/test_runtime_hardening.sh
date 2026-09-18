@@ -52,6 +52,17 @@ test_workspace_squid_override_is_readonly() {
         touch /workspace/.squid-claudecode-docker/security-test-write-attempt
 }
 
+test_global_settings_write_protected() {
+    # See falco/claude-code-rules.yaml OPEN ITEMS "Third pass": this file
+    # carries the baked-in WebFetch/WebSearch permissions.deny (Dockerfile),
+    # chowned to root/mode 644 so claudecode (UID 1000, the same user a
+    # compromised session runs as) can't edit it back out. Detection-side
+    # counterpart is test_write_attempt_to_global_settings_fires in
+    # test_falco_rules.sh.
+    assert_failure "${COMPOSE[@]}" exec -T claude-code \
+        sh -c 'echo x >> /home/claudecode/.claude/settings.json'
+}
+
 test_squid_denies_nonstandard_port_even_for_allowed_domain() {
     # Safe_ports/SSL_ports ACLs in squid.conf (ports 80/443 only) must
     # reject CONNECT to any other port outright, independent of the domain
@@ -63,6 +74,7 @@ test_squid_denies_nonstandard_port_even_for_allowed_domain() {
 
 run_test test_direct_network_bypass_fails
 run_test test_workspace_squid_override_is_readonly
+run_test test_global_settings_write_protected
 run_test test_squid_denies_nonstandard_port_even_for_allowed_domain
 
 print_summary
