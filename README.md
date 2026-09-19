@@ -159,7 +159,11 @@ docker compose exec claude-code bash   # or: docker compose exec claude-code cla
 
 By default, the OAuth login is lost on every `docker compose down`,
 since `/home/claudecode/.claude` isn't mounted. For persistent login,
-add this to `docker-compose.yml`:
+add this to `docker-compose.yml`. Note `~/.claude.json` (OAuth token,
+`disabledMcpServers`, and other per-user/per-project state) is a separate
+file next to `~/.claude/`, not inside it -- both need mounting, or login
+and MCP-server toggles like disabling a connector still reset on every
+`docker compose down`:
 
 ```yaml
 services:
@@ -167,9 +171,11 @@ services:
     volumes:
       - ${HOST_WORKSPACE:-.}:/workspace
       - claude-config:/home/claudecode/.claude
+      - claude-config-json:/home/claudecode/.claude.json
 
 volumes:
   claude-config:
+  claude-config-json:
 ```
 
 Alternatively, to reuse login data from the host (if `claude login` was
@@ -178,7 +184,14 @@ already run there):
 ```yaml
     volumes:
       - ${HOME}/.claude:/home/claudecode/.claude
+      - ${HOME}/.claude.json:/home/claudecode/.claude.json
 ```
+
+The host `~/.claude.json` must already exist as a file before the first
+`docker compose up` with this mount -- Docker creates a directory instead
+at the target path if the host source doesn't exist yet, which breaks
+Claude Code's own use of that path. `touch ~/.claude.json` first if
+you've never run `claude` on the host.
 
 **Note on multiple instances:** a named volume like `claude-config` above
 is scoped to the Compose project, and each workspace now runs as its own

@@ -28,8 +28,13 @@ services:
       # policy egress-proxy reads from the same host directory (see
       # AGENTS.md).
       - ${SQUID_WORKSPACE_DIR:-./.squid-empty}:/workspace/.squid-claudecode-docker:ro
-      # Optional: reuse OAuth credentials from the host
+      # Optional: reuse OAuth credentials from the host. Both lines are
+      # needed together -- ~/.claude.json (OAuth token, disabledMcpServers,
+      # etc.) is a separate file next to ~/.claude/, not inside it, so
+      # mounting only the directory leaves login/MCP state unpersisted
+      # (see README "Persistence").
       # - ${HOME}/.claude:/home/claudecode/.claude
+      # - ${HOME}/.claude.json:/home/claudecode/.claude.json
     environment:
       HTTP_PROXY: http://egress-proxy:3128
       HTTPS_PROXY: http://egress-proxy:3128
