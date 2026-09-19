@@ -54,10 +54,10 @@ test_workspace_squid_override_is_readonly() {
 
 test_global_settings_write_protected() {
     # See falco/claude-code-rules.yaml OPEN ITEMS "Third pass": this file
-    # carries the baked-in WebFetch/WebSearch permissions.deny (Dockerfile),
-    # chowned to root/mode 644 so claudecode (UID 1000, the same user a
-    # compromised session runs as) can't edit it back out. Detection-side
-    # counterpart is test_write_attempt_to_global_settings_fires in
+    # carries the baked-in WebFetch (allow) / WebSearch (deny) permissions
+    # (Dockerfile), chowned to root/mode 644 so claudecode (UID 1000, the
+    # same user a compromised session runs as) can't edit it back out.
+    # Detection-side counterpart is test_write_attempt_to_global_settings_fires in
     # test_falco_rules.sh.
     assert_failure "${COMPOSE[@]}" exec -T claude-code \
         sh -c 'echo x >> /home/claudecode/.claude/settings.json'

@@ -928,16 +928,20 @@ test_forceful_git_push_fires() {
 test_global_settings_permissions_configured() {
     # Structural check for the Dockerfile-baked permission list (see
     # falco/claude-code-rules.yaml OPEN ITEMS "Third pass" and Dockerfile's
-    # settings.json-merge step) -- WebFetch/WebSearch are server-side tools
-    # invisible to this repo's entire network sandbox, so gating them via
-    # permissions is the only control point, not a Falco rule. `ask`, not
-    # `deny`, as of 2026-09-18 (see that OPEN ITEMS entry) -- SSL Bump +
-    # the reference-domain allowlist made supervised access acceptable.
-    # Independent of the Falco/monitoring pipeline, same as
-    # test_claude_exe_path_anchor_current above.
+    # settings.json-merge step). WebFetch actually routes through this
+    # container's proxy and is gated by Squid's domain allowlist (confirmed
+    # live, see that OPEN ITEMS entry's CORRECTED note) -- enforcement
+    # already happens at the proxy layer, so `allow` here only drops the
+    # interactive prompt, it doesn't widen what's reachable. WebSearch is
+    # the one genuinely server-side tool, invisible to this repo's entire
+    # network sandbox regardless of SSL Bump -- `deny` (2026-09-18, third
+    # revision) since permissions gating is the only control point for it,
+    # not a Falco rule. Independent of the Falco/monitoring pipeline, same
+    # as test_claude_exe_path_anchor_current above.
     local settings
     settings="$("${COMPOSE[@]}" exec -T claude-code cat /home/claudecode/.claude/settings.json 2>/dev/null)"
-    assert_contains "$settings" '"ask"' "settings.json has an ask list"
+    assert_contains "$settings" '"allow"' "settings.json has an allow list"
+    assert_contains "$settings" '"deny"' "settings.json has a deny list"
     assert_contains "$settings" "WebFetch" "settings.json gates WebFetch"
     assert_contains "$settings" "WebSearch" "settings.json gates WebSearch"
 }

@@ -178,29 +178,48 @@ with open(p) as f:
     s = json.load(f)
 s['statusLine'] = {'type': 'command', 'command': 'python3 /home/claudecode/.claude/statusline.py'}
 s.setdefault('permissions', {})
-# ask, not deny (2026-09-18): now that egress-proxy has SSL Bump for
-# path-level filtering (see squid.conf) and a curated reference-domain
-# allowlist, WebFetch/WebSearch require interactive per-use approval
-# instead of being fully removed from context. The read-only lockdown
-# below still applies -- a compromised session can't silently rewrite this
-# back to "allow".
+# WebFetch: allow (2026-09-18, third revision) -- a live test confirmed
+# WebFetch actually routes its request through this container's
+# HTTP_PROXY/HTTPS_PROXY and is gated by Squid's domain allowlist same as
+# curl (see falco/claude-code-rules.yaml OPEN ITEMS "Third pass" CORRECTED
+# entry), so the enforcement already happens at the proxy layer regardless
+# of this permission -- `allow` only drops the interactive per-use prompt,
+# it does not widen what's actually reachable (a non-allowlisted domain
+# still gets "proxy refused the connection" same as a bare curl call).
+# WebSearch: deny (2026-09-18, later same day) -- confirmed live that
+# WebSearch is the one genuinely server-side tool of the two: its actual
+# search request is made by Anthropic's own backend, never touches this
+# container's network namespace, so it's invisible to both Squid's domain
+# allowlist and Falco regardless of SSL Bump. Unlike WebFetch there is no
+# proxy layer underneath to fall back on, so permissions gating is the only
+# control point -- `deny` removes the tool from context entirely. The
+# read-only lockdown below still applies -- a compromised session can't
+# silently rewrite either list back.
+allow = set(s['permissions'].get('allow', []))
+allow.add('WebFetch')
+s['permissions']['allow'] = sorted(allow)
 ask = set(s['permissions'].get('ask', []))
-ask.update(['WebFetch', 'WebSearch'])
+ask.discard('WebSearch')
+ask.discard('WebFetch')
 s['permissions']['ask'] = sorted(ask)
+deny = set(s['permissions'].get('deny', []))
+deny.discard('WebFetch')
+deny.add('WebSearch')
+s['permissions']['deny'] = sorted(deny)
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
 EOF
 
-# Locks the deny list above against being edited back out from inside a
-# compromised/prompt-injected session: WebFetch/WebSearch are server-side
-# tools whose actual outbound request is made by Anthropic's backend, not by
-# any process in this container's network namespace -- invisible to both
-# egress-proxy's domain allowlist and Falco (see falco/claude-code-rules.yaml
-# OPEN ITEMS "Third pass" for the full writeup), so the permissions.deny
-# above is the only control point that closes this gap, and it only works if
-# claudecode (UID 1000, the same user a compromised session runs as) can't
-# just rewrite it. Same "sandboxed UID can read, not write" pattern already
-# used for /workspace/.squid-claudecode-docker (see docker-compose.yml).
+# Locks the ask/deny lists above against being edited back out from inside a
+# compromised/prompt-injected session: WebSearch is a server-side tool whose
+# actual outbound request is made by Anthropic's backend, not by any process
+# in this container's network namespace -- invisible to both egress-proxy's
+# domain allowlist and Falco (see falco/claude-code-rules.yaml OPEN ITEMS
+# "Third pass" for the full writeup), so the permissions.deny above is the
+# only control point that closes this gap, and it only works if claudecode
+# (UID 1000, the same user a compromised session runs as) can't just rewrite
+# it. Same "sandboxed UID can read, not write" pattern already used for
+# /workspace/.squid-claudecode-docker (see docker-compose.yml).
 # settings.json only holds build-time config (hooks/statusLine/theme/
 # permissions) -- confirmed nothing later in this Dockerfile or
 # entrypoint.sh writes to it -- so dropping its write bits doesn't break

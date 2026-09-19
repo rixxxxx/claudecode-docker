@@ -695,6 +695,33 @@
 #     depth even though the proxy already covers it) -- this correction is
 #     about the stated mechanism/reasoning being wrong, not the mitigation
 #     choice.
+#     UPDATED 2026-09-18 (same day, third follow-up, user's call): WebSearch
+#     moved back from `ask` to `deny`. WebFetch stays on `ask` -- it's
+#     genuinely proxy-gated per the correction above, so per-use approval is
+#     enough. WebSearch got no such correction: it remains the one tool
+#     whose request never enters this container's network namespace, so
+#     `ask` on it only gives a false sense of supervision -- an approved
+#     search can still exfiltrate data via the query string with nothing
+#     for Squid or Falco to see. `deny` removes it from context entirely
+#     instead. The considered alternative -- allow WebSearch back via curl/
+#     wget against a search-engine domain added to
+#     .squid-claudecode-docker/ -- was discussed and deferred; would bring
+#     search under the same Squid-logged/SSL-Bump-filterable path as
+#     WebFetch, at the cost of losing WebSearch's built-in result
+#     summarization and needing a search endpoint that scrapes cleanly
+#     without JS (e.g. html.duckduckgo.com, not google.com's JS-heavy
+#     results page).
+#     UPDATED 2026-09-18 (same day, fourth follow-up, user's call): WebFetch
+#     moved from `ask` to `allow`. Not a new gap -- the CORRECTED entry above
+#     already established that WebFetch's enforcement lives entirely at the
+#     proxy layer (Squid's domain allowlist), so this permission was never
+#     the thing standing between a compromised session and an arbitrary
+#     fetch; a non-allowlisted domain still gets "proxy refused the
+#     connection" exactly as before. `allow` just drops the interactive
+#     per-use prompt for a tool the network sandbox already gates, matching
+#     how curl/wget in Bash are never prompted per-URL either. WebSearch's
+#     `deny` is unaffected -- it has no proxy layer underneath to fall back
+#     on, so it's the one tool that still needs the permissions-layer block.
 #   - Git-remote exfiltration: DONE 2026-09-18 -- new, concrete,
 #     Falco-detectable gap, not from the AI-agent research above but
 #     surfaced while designing the WebFetch fix's adjacent threat model.
