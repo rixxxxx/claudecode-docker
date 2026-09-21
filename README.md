@@ -7,14 +7,18 @@ iptables inside the container itself.
 
 ## Architecture
 
-    [host]
-    cc-container ---> docker compose up -d ---> [claude-code container] ---(internal network, no internet access)---> [egress-proxy]
-                                                                                                                                |
-                                                                                                                      (external network)
-                                                                                                                                |
-                                                                                                                            Internet
-                        \
-                         `-> docker compose exec claude-code claude   (drops you into the console)
+```mermaid
+flowchart LR
+    CC["cc-container<br/>(host)"]
+    CN["claude-code<br/>container"]
+    EP["egress-proxy"]
+    NET(("Internet"))
+
+    CC -->|"docker compose up -d"| CN
+    CC -->|"docker compose exec<br/>claude-code claude"| CN
+    CN -->|"internal network<br/>(no internet access)"| EP
+    EP -->|"external network"| NET
+```
 
 - `cc-container`: the only host-side entry point. Wraps `docker compose up
   -d` + `docker compose exec claude-code claude` into one command — see
