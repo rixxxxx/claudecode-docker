@@ -1212,9 +1212,16 @@
     either a misconfigured tool or a compromised dependency trying to
     escalate. None of these binaries are installed in the base image, so
     this also catches a dependency bringing/installing its own copy.
+    Scoped by container.id rather than claude_code_container: `su` is
+    setuid-root, so a completed exec flips the effective user.name to root
+    before this condition ever evaluates, which claude_code_container's own
+    user.name check would silently exclude (see falco-rules.yaml OPEN ITEMS'
+    2026-09-21 correction, near the "Mount or umount binary executed" rule).
+    Also fires for these binaries executed in sibling containers -- an
+    accepted trade-off, same as that rule.
   condition: >
     spawned_process
-    and claude_code_container
+    and container.id != host
     and proc.name in (sudo, su, pkexec, doas)
   output: >
     Privilege escalation attempt in claude-code
@@ -1827,10 +1834,38 @@
 # generated. Raising Falco's own `log_level` to `debug` produced no
 # additional diagnostic output either, on both 0.39.2 and 0.44.1.
 #
+# CORRECTED 2026-09-21: falcosecurity/libs#3113 was a misdiagnosis, not a
+# real Falco/libs bug. Maintainer leogr's response: user.name/user.uid
+# report a process's EFFECTIVE credentials, which flip to root/0 the
+# instant a setuid-root binary's execve completes -- a rule (or debug rule)
+# keyed on user.name=<original user> can therefore never match su/mount/
+# chsh, regardless of whether Falco generated the event. They reproduced
+# this live on both 0.44.1 and 0.41.3: a rule with zero user.name condition
+# fires correctly for all of them. This exactly explains this file's own
+# "unscoped debug rule" control above, which was NOT actually unscoped --
+# it still filtered on `user.name = claudecode` (inherited from
+# claude_code_container) and so was confounded by the very bug it was
+# trying to rule out. The real culprit was this repo's own
+# claude_code_container macro (line ~806: `user.name = claudecode and
+# container.id != host`), used as the scoping condition for both rules
+# below. Live-re-verified 2026-09-21 with a genuinely unscoped throwaway
+# debug rule (`condition: container.id != host and proc.name in (mount,
+# umount, su)`, no user.name anywhere): fires immediately for all three,
+# reporting user.name=root user.uid=0 -- confirming leogr's diagnosis
+# exactly. Fixed by dropping the `user.name = claudecode` requirement from
+# just these two rules (both below), replacing `claude_code_container` with
+# plain `container.id != host` -- the other 24 rules using
+# claude_code_container are all syscall-attempt-detectors that reliably
+# fail with EPERM in this container, so user.name never actually changes
+# for them and they're unaffected. Accepted trade-off: these two rules will
+# now also fire for mount/umount/su executed in sibling containers
+# (egress-proxy, security-monitor, stop-watcher), which is fine since none
+# of them run these binaries during normal operation, and missing a real
+# privilege-escalation attempt in the attacker-reachable claude-code
+# container is worse than an occasional cross-container false positive.
 # tests/security/test_falco_rules.sh's test_mount_binary_execution_fires
-# and test_privilege_escalation_attempt's `su` case are soft-skips
-# pending an upstream fix (falcosecurity/libs#3113) -- see their own
-# comments.
+# and test_privilege_escalation_attempt's `su` case are hard assertions
+# again, no longer soft-skips.
 - rule: Mount or umount binary executed in claude-code
   desc: >
     The mount or umount command-line utility was executed inside
@@ -1838,10 +1873,16 @@
     claude-code" above (the read-only mounts in this repo are a core
     security boundary) -- detected here via process execution instead of
     the raw syscall, following the same pattern Falco's own official
-    "Mount Launched in Privileged Container" rule uses.
+    "Mount Launched in Privileged Container" rule uses. Scoped by
+    container.id rather than claude_code_container: mount/umount are
+    setuid-root, so a completed exec flips the effective user.name to root
+    before this condition ever evaluates, which claude_code_container's own
+    user.name check would silently exclude (see OPEN ITEMS' 2026-09-21
+    correction above). Also fires for mount/umount executed in sibling
+    containers -- an accepted trade-off, see that same comment.
   condition: >
     spawned_process
-    and claude_code_container
+    and container.id != host
     and proc.name in (mount, umount)
     and not (claude_code_binary_exepath or node_binary_exepath)
   output: >

@@ -375,27 +375,20 @@ test_privilege_escalation_attempt() {
             # use a harmless, non-interactive invocation to avoid a
             # password-prompt hang.
             #
-            # Soft-skips instead of hard-failing as of the Falco 0.44.1
-            # upgrade (2026-09-15): `su`'s own execve is no longer
-            # captured at all on this build (neither direct-exec nor
-            # `sh -c` forms). Root-caused, not just observed: any
-            # SUCCESSFUL setuid-transitioning execve is affected (confirmed
-            # general via a fourth, unrelated setuid binary `chsh`, same
-            # silence) -- traced to falcosecurity/libs#2726, which moved
-            # successful execve/execveat capture to the kernel's
-            # `sched_process_exec` tracepoint (failing calls still use the
-            # old path, which is why raw syscall attempts elsewhere in
-            # this file keep working). See "Mount or umount binary
-            # executed in claude-code"'s comment in claude-code-rules.yaml
-            # for the full writeup. This used to be a reliable hard
-            # assertion on Falco 0.39.2. Filed upstream 2026-09-16 as
-            # falcosecurity/libs#3113; still open as of this writing.
+            # Hard assertion again as of 2026-09-21: this was a soft-skip
+            # after the Falco 0.44.1 upgrade (2026-09-15) because `su`'s own
+            # execve wasn't being captured -- initially attributed to
+            # falcosecurity/libs#2726/#3113. CORRECTED: that was a
+            # misdiagnosis. Maintainer leogr's response on #3113: user.name/
+            # user.uid reflect EFFECTIVE credentials, which flip to root the
+            # instant su's setuid exec completes -- the rule's own
+            # claude_code_container scoping (user.name = claudecode) could
+            # therefore never match it, independent of any real Falco bug.
+            # See claude-code-rules.yaml's "Mount or umount binary executed"
+            # comment for the full writeup. Fixed by scoping this rule via
+            # plain container.id instead of claude_code_container.
             "${COMPOSE[@]}" exec -T claude-code "$bin" --help >/dev/null 2>&1 || true
-            if wait_for_log "$checkpoint" "Privilege escalation attempt in claude-code" 15; then
-                assert_equal "seen" "seen" "alert fired ($bin attempt was captured on this host)"
-            else
-                echo "  SKIP test_privilege_escalation_attempt ($bin): Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture) -- same regression as the mount/umount binary rule. Tracked upstream as falcosecurity/libs#3113. Not counted as a failure."
-            fi
+            assert_alert_seen "$checkpoint" "Privilege escalation attempt in claude-code" 15
         else
             "${COMPOSE[@]}" exec -T claude-code sh -c "
                 mkdir -p ~/.local/bin
@@ -625,26 +618,21 @@ test_mount_binary_execution_fires() {
     # Privileged Container" rule detects execution of the mount/umount
     # BINARY via spawned_process rather than hooking the raw syscall.
     #
-    # Was a soft-skip on Falco 0.39.2. Briefly assumed fixed by the 0.39.2
-    # -> 0.44.1 upgrade (by analogy with the syscall-level sibling rule,
-    # which the upgrade DID fix) -- CORRECTED after actually re-testing:
-    # still silent on 0.44.1. Root-caused (not just observed) to
-    # falcosecurity/libs#2726: successful execve/execveat capture moved to
-    # the kernel's `sched_process_exec` tracepoint, which doesn't generate
-    # an event when the successful exec also completes a setuid credential
-    # transition -- confirmed general (not mount/umount-specific) via `su`
-    # and a fourth, unrelated setuid binary `chsh` reproducing the exact
-    # same silence. See claude-code-rules.yaml's "Mount or umount binary
-    # executed" comment for the full writeup. Back to soft-skip pending an
-    # upstream fix. Filed upstream 2026-09-16 as falcosecurity/libs#3113;
-    # still open as of this writing.
+    # Was a soft-skip on Falco 0.39.2, then again after the 0.44.1 upgrade
+    # (2026-09-15) -- initially attributed to falcosecurity/libs#2726/#3113
+    # (a claimed driver-level capture gap for successful setuid-transitioning
+    # execve). CORRECTED 2026-09-21: that was a misdiagnosis. Maintainer
+    # leogr's response on #3113: user.name/user.uid reflect EFFECTIVE
+    # credentials, which flip to root the instant mount/umount's setuid exec
+    # completes -- the rule's own claude_code_container scoping (user.name =
+    # claudecode) could therefore never match it, independent of any real
+    # Falco bug. See claude-code-rules.yaml's "Mount or umount binary
+    # executed" comment for the full writeup. Fixed by scoping that rule via
+    # plain container.id instead of claude_code_container -- hard assertion
+    # again, not a soft-skip.
     local checkpoint; checkpoint="$(log_line_count)"
     "${COMPOSE[@]}" exec -T claude-code sh -c 'mount >/dev/null 2>&1; umount >/dev/null 2>&1' >/dev/null 2>&1
-    if wait_for_log "$checkpoint" "Mount or umount binary executed in claude-code" 15; then
-        assert_equal "seen" "seen" "alert fired (mount/umount binary execution was captured on this host)"
-    else
-        echo "  SKIP test_mount_binary_execution_fires: Falco 0.44.1 does not surface a successful setuid-transitioning execve's own event (falcosecurity/libs#2726 -- sched_process_exec-based capture, confirmed general via su/chsh too, not mount/umount-specific) -- see falco/claude-code-rules.yaml's \"Mount or umount binary executed\" rule comment. Tracked upstream as falcosecurity/libs#3113. Not counted as a failure."
-    fi
+    assert_alert_seen "$checkpoint" "Mount or umount binary executed in claude-code" 15
 }
 
 test_unshare_attempt_fires() {
