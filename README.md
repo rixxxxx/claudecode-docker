@@ -132,16 +132,16 @@ the containers on later runs) and then execs into `claude` inside the
 `claude-code` container — same effect as running steps below manually.
 
 `cc-container` accepts three optional flags, combinable in one invocation:
-`--update` (rebuild if a dependency moved, see
-[docs/updating-dependencies.md](docs/updating-dependencies.md);
-`--update --force` skips the "anything newer?" check), `--monitor`
-(runtime security monitoring, see
-[docs/runtime-monitoring.md](docs/runtime-monitoring.md)), and
-`--ssl-bump` (path/query-level filtering, see
-[docs/tls-interception.md](docs/tls-interception.md)). `--monitor` and
-`--ssl-bump` can go anywhere in the argument list; `--update` must come
-first among the *remaining* arguments after those two are stripped out
-(so `cc-container --monitor --update --force` works, but
+
+| Flag | Effect | Details |
+|------|--------|---------|
+| `--update` | Rebuilds if a dependency moved; add `--force` to skip the "anything newer?" check | [docs/updating-dependencies.md](docs/updating-dependencies.md) |
+| `--monitor` | Enables runtime security monitoring (Falco) | [docs/runtime-monitoring.md](docs/runtime-monitoring.md) |
+| `--ssl-bump` | Enables path/query-level filtering, not just domain-level | [docs/tls-interception.md](docs/tls-interception.md) |
+
+`--monitor` and `--ssl-bump` can go anywhere in the argument list;
+`--update` must come first among the *remaining* arguments after those two
+are stripped out (so `cc-container --monitor --update --force` works, but
 `cc-container --force --update` doesn't — `--update` only ever looks at
 what's left in position one). Anything else on the command line is
 silently ignored rather than passed through to `claude` or erroring.
