@@ -429,30 +429,24 @@ don't read the system trust store by default — handled via
 
 ## TLS interception (SSL Bump, optional)
 
-**Status (2026-09-18): live-verified working.** `ubuntu/squid:latest`
-ships the plain `squid` package (GnuTLS, no SSL-Bump capability at all)
--- Debian/Ubuntu split Squid into two mutually-exclusive packages built
-from the same source, and **`squid-openssl`** (OpenSSL-linked, has
+**Status: live-verified working.** `ubuntu/squid:latest` ships the plain
+`squid` package (GnuTLS, no SSL-Bump capability at all) — Debian/Ubuntu
+split Squid into two mutually-exclusive packages built from the same
+source, and **`squid-openssl`** (OpenSSL-linked, has
 `security_file_certgen`) is the one with SSL-Bump support.
 `Dockerfile.egress-proxy` installs `squid-openssl` on top before
-initializing the cert-cache. Getting there took three real, live-caught
-bugs, each fixed against actual `docker compose build`/`up` output (not
-guessed): `security_file_certgen` lives at `/usr/lib/squid/` which isn't
-on `$PATH` (a `command -v`-only lookup silently found nothing), the
-cert-cache directory has to be at Squid's own default
-`/var/spool/squid/ssl_db`, not an arbitrary path, and Squid's `acl ...
-urlpath_regex` treats a *quoted* pattern as a filename to load from, not
-an inline regex (see `Dockerfile.egress-proxy` and
-`.squid-sslbump-enabled/10-bump.conf` for the full writeup). A live run of
-`TEST_SSL_BUMP=1 tests/integration/test_ssl_bump.sh` now confirms all
-four checks pass: the bumped connection's TLS chain terminates at the
-generated CA (not the real site's), the illustrative
-`exfil_suspicious_url` rule actually blocks a long-base64 query string,
-a non-allowlisted domain stays blocked, and an allowlisted domain stays
-reachable. Default (non-ssl-bump) usage remains completely unaffected --
-the whole feature stays isolated behind `SQUID_HTTP_PORT_DIR`/
-`SQUID_SSLBUMP_DIR`/`SQUID_BUMP_CA_DIR`, all defaulting to inert
-placeholders (see `AGENTS.md` "SSL Bump support" for the mechanism).
+initializing the cert-cache — see that file and
+`.squid-sslbump-enabled/10-bump.conf` for the implementation details and
+the bugs that surfaced getting there. `TEST_SSL_BUMP=1
+tests/integration/test_ssl_bump.sh` confirms end to end: the bumped
+connection's TLS chain terminates at the generated CA (not the real
+site's), the illustrative `exfil_suspicious_url` rule blocks a
+long-base64 query string, a non-allowlisted domain stays blocked, and an
+allowlisted domain stays reachable. Default (non-SSL-Bump) usage remains
+completely unaffected — the whole feature stays isolated behind
+`SQUID_HTTP_PORT_DIR`/`SQUID_SSLBUMP_DIR`/`SQUID_BUMP_CA_DIR`, all
+defaulting to inert placeholders (see `AGENTS.md` "SSL Bump support" for
+the mechanism).
 
 By default, `egress-proxy` only sees the *domain* of an HTTPS request (via
 CONNECT) — never the path or query string, since the connection is
@@ -498,29 +492,20 @@ Separately, `.squid-sslbump-enabled/20-search-only.conf` restricts a
 subset of the reference-domain allowlist (Stack Overflow, MDN, pkg.go.dev,
 PyPI, crates.io, npm, RubyGems, Packagist, Django docs, Wikipedia,
 PostgreSQL docs — see that file for the exact list) to their own
-search-query endpoint only, denying everything else on those domains --
-live-verified end to end (`TEST_SSL_BUMP=1
-tests/integration/test_ssl_bump.sh`), including two real-world snags that
-weren't obvious from research alone: crates.io's own infrastructure
-403s a bare `curl` request (bot/User-Agent filtering, unrelated to this
-project's rule -- fixed by using a browser-like User-Agent in the test,
-not by changing the rule), and getting these rules to actually apply to
-the *decrypted* request instead of the raw `CONNECT` needed an explicit
-`http_access allow CONNECT <domain>` line per domain (see
-`20-search-only.conf`'s own header comment and AGENTS.md "Security-critical
-files" for the full root-cause writeup). Domains where the site's own
-search has no simple, restrictable server-side endpoint (rustdoc,
-devdocs.io, Python's Sphinx docs; anything backed by third-party Algolia
-DocSearch except see below; Redis/AWS docs' JS-SPA search;
-Docker/Falco/Google Cloud docs' nonexistent `/search` path; MySQL docs'
-researched path turning out to be wrong with no real endpoint found — all
-confirmed live, not guessed) are deliberately left fully open instead,
-since a search-only rule there would either do nothing or break real
-usage. `.algolia.net`/`.algolianet.com` (the actual third-party search
-backend for react.dev/vuejs.org/angular.dev/kubernetes.io — search on
-those sites is a client-side widget with no dedicated page on their own
-domain) are separately allowlisted and restricted to just the query API
-path.
+search-query endpoint only, denying everything else on those domains —
+live-verified via `TEST_SSL_BUMP=1 tests/integration/test_ssl_bump.sh`
+(see `20-search-only.conf`'s own header comment and `AGENTS.md`
+"Security-critical files" for the two real-world gotchas that surfaced
+along the way, e.g. crates.io 403ing a bare `curl` request over
+User-Agent filtering). Domains where the site's own search has no simple,
+restrictable server-side endpoint (rustdoc, devdocs.io, Python's Sphinx
+docs, most Algolia-DocSearch-backed sites, Redis/AWS docs' JS-SPA search,
+Docker/Falco/Google Cloud docs, MySQL docs) are deliberately left fully
+open instead, since a search-only rule there would either do nothing or
+break real usage. `.algolia.net`/`.algolianet.com` (the actual
+third-party search backend for
+react.dev/vuejs.org/angular.dev/kubernetes.io) are separately allowlisted
+and restricted to just the query API path.
 
 **Limitations (see `falco/claude-code-rules.yaml` OPEN ITEMS "Third pass"
 and this feature's own commit for open items):**
@@ -555,9 +540,9 @@ or directly via `docker compose --profile monitoring up -d
 security-monitor` -- though that bypasses the auto-rebuild described below,
 so prefer `cc-container --monitor` unless you have a specific reason not to.
 
-Verified end-to-end against a live build (Falco 0.39.2) on 2026-09-11 —
-rule matching, live log output, and desktop notification all confirmed
-working.
+Verified end-to-end against a live build — rule matching, live log
+output, and desktop notification all confirmed working; see `AGENTS.md`
+"Runtime monitoring" for the verification history across Falco upgrades.
 
 `cc-container --monitor` (with or without `--update`) always rebuilds this
 sidecar's image first (cached, so a no-op when nothing changed) before
@@ -695,21 +680,15 @@ all but is deliberately excluded from the auto-stop count.
 
 For verifying that individual detection rules (not just the pipeline
 itself) actually fire, `tests/security/test_falco_rules.sh` automates this
-for most rules in `falco/claude-code-rules.yaml` (11 checks as of
-2026-09-14 — see that file for the current, maintained list) via
-`./run-tests.sh --security`, and `tests/security/test_auto_stop_pipeline.sh`
-covers the auto-stop path itself end-to-end, including the cross-project
-safety boundary. Whether "Unexpected shell"'s `proc.pexepath` hardening
-false-positives on a *real*, assistant-issued Bash tool call needed a live
-interactive session to check (not scriptable) — confirmed live 2026-09-14,
-no false positive; see `AGENTS.md` "Runtime monitoring" for that manual
-procedure if it ever needs re-checking (e.g. after a Claude Code or RTK
-upgrade changes the tool-call process chain). "Process impersonating
-trusted name via prctl" is confirmed live as of 2026-09-14 too (a
-non-claude.exe process renaming itself to "Bun" via `prctl`), now covered
-by an automated test as well (`test_prctl_impersonation_fires`) — every
-rule in `falco/claude-code-rules.yaml` has at least one live-fired
-confirmation as of 2026-09-14.
+for the rules in `falco/claude-code-rules.yaml` via `./run-tests.sh
+--security`, and `tests/security/test_auto_stop_pipeline.sh` covers the
+auto-stop path itself end-to-end, including the cross-project safety
+boundary. Every rule in `falco/claude-code-rules.yaml` has been
+live-fire-verified at least once — automated where scriptable, manually
+where it needs a real interactive session (e.g. confirming "Unexpected
+shell"'s `proc.pexepath` hardening doesn't false-positive on a genuine,
+assistant-issued Bash tool call); see `AGENTS.md` "Runtime monitoring" for
+that manual procedure and the full verification history.
 
 **Trade-offs, on purpose:**
 - `security-monitor` is the one service in this repo that runs with
