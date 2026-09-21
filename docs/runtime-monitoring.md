@@ -9,6 +9,19 @@ this repo has an optional runtime security monitor based on
 `claude-code` from the host kernel — not by giving `claude-code` itself
 any extra privileges, but as a completely separate, off-by-default sidecar.
 
+```mermaid
+flowchart LR
+    CN["claude-code<br/>container"]
+    SM["security-monitor<br/>(Falco, eBPF)"]
+    SW["stop-watcher"]
+    D(("desktop<br/>notification"))
+
+    SM -.->|"observes syscalls<br/>(host kernel)"| CN
+    SM -->|"alert"| D
+    SM -->|"CRITICAL alert"| SW
+    SW -->|"stop<br/>(docker.sock)"| CN
+```
+
 Enable it per session with:
 
 ```bash

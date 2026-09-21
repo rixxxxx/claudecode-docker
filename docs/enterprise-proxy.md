@@ -38,6 +38,21 @@ sits on a dedicated `proxy-chain` network that `claude-code` never joins,
 so the sandbox can't reach it directly (see
 [AGENTS.md](../AGENTS.md#enterprise-proxy-support)).
 
+```mermaid
+flowchart LR
+    CN["claude-code<br/>container"]
+    EP["egress-proxy"]
+    PA["proxy-auth<br/>(px — NTLM/Kerberos only)"]
+    CP(("corporate<br/>proxy"))
+    NET(("Internet"))
+
+    CN --> EP
+    EP -->|"Basic auth"| CP
+    EP -->|"NTLM/Kerberos"| PA
+    PA --> CP
+    CP --> NET
+```
+
 For Kerberos specifically, also set (Linux hosts with an existing `kinit`
 ticket only — Windows/macOS domain SSO passthrough isn't supported):
 
