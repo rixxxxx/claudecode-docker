@@ -35,7 +35,7 @@ new rule's own test failing with a completely empty log.
 
 When `--monitor` is used, `claude-code` waits for `security-monitor` (and
 `stop-watcher`, its auto-stop companion — see
-[Automatic stop](#automatic-stop-on-repeated-critical-alerts) below) to
+[Automatic stop](#automatic-stop-on-repeated-critical-alerts)) to
 actually report healthy before it starts, so monitoring is already
 watching from the first syscall `claude-code` makes, not started in a race
 against it. This adds a few seconds to startup; without `--monitor`, it
@@ -50,7 +50,7 @@ Falco's own bundled default ruleset:
 - A write attempt against the read-only `.squid-claudecode-docker` mount
   (an attempt to widen the sandbox's own network policy from inside) —
   note: suspected to never actually fire in practice, see
-  [Known blind spots](#known-blind-spots) below.
+  [Known blind spots](#known-blind-spots).
 - An outbound connection attempt from `claude-code` to anything other than
   `egress-proxy` (shouldn't be able to succeed given the network topology,
   but the attempt itself is worth knowing about), including specifically
@@ -116,7 +116,7 @@ CRITICAL/EMERGENCY alerts have fired **for that same container**. It's
 kept as a separate sidecar from `security-monitor` itself because it
 needs `docker.sock` to stop a container, and that access is deliberately
 not given to the same service that already runs Falco (see
-[Trade-offs](#trade-offs-on-purpose) below).
+[Trade-offs](#trade-offs-on-purpose)).
 
 If you run more than one workspace at once with `--monitor`, this is
 counted per `claude-code` container, not globally — `security-monitor`
@@ -194,7 +194,7 @@ the full verification history.
   attribution relies on Falco's own `/proc`-based enrichment instead,
   which is coarser. The one place `docker.sock` does exist in this repo is
   `stop-watcher` (see
-  [Automatic stop](#automatic-stop-on-repeated-critical-alerts) above), a
+  [Automatic stop](#automatic-stop-on-repeated-critical-alerts)), a
   separate, minimal, never-on-by-default service kept apart from
   `security-monitor` for exactly this reason — see
   [AGENTS.md](../AGENTS.md#runtime-monitoring).
