@@ -131,6 +131,21 @@ runs `docker compose up -d` (building the image on first run, reusing
 the containers on later runs) and then execs into `claude` inside the
 `claude-code` container — same effect as running steps below manually.
 
+`cc-container` accepts three optional flags, combinable in one invocation:
+`--update` (rebuild if a dependency moved, see
+[docs/updating-dependencies.md](docs/updating-dependencies.md);
+`--update --force` skips the "anything newer?" check), `--monitor`
+(runtime security monitoring, see
+[docs/runtime-monitoring.md](docs/runtime-monitoring.md)), and
+`--ssl-bump` (path/query-level filtering, see
+[docs/tls-interception.md](docs/tls-interception.md)). `--monitor` and
+`--ssl-bump` can go anywhere in the argument list; `--update` must come
+first among the *remaining* arguments after those two are stripped out
+(so `cc-container --monitor --update --force` works, but
+`cc-container --force --update` doesn't — `--update` only ever looks at
+what's left in position one). Anything else on the command line is
+silently ignored rather than passed through to `claude` or erroring.
+
 4. First time in, log in with your Pro/Max subscription:
 
 ```bash
@@ -157,8 +172,20 @@ docker compose exec claude-code bash   # or: docker compose exec claude-code cla
 
 ## Persistence
 
-By default, the OAuth login is lost on every `docker compose down`,
-since `/home/claudecode/.claude` isn't mounted. For persistent login,
+By default, the OAuth login is lost whenever the `claude-code` container
+itself is removed or recreated, since `/home/claudecode/.claude` isn't
+mounted — including the automatic prompt `cc-container` shows every time
+your `claude` session ends (`/exit`, Ctrl+D, Ctrl+C, or a crash; see
+"Architecture" above), not just a manually-typed `docker compose down`:
+
+| Event | Login survives? |
+|-------|------------------|
+| Leaving the container running (answering "N"/Enter at the prompt, or a plain `docker stop`) | Yes |
+| Host machine reboot alone (container not removed — `restart: unless-stopped` even auto-starts it again) | Yes |
+| Answering "y" at the prompt, or running `docker compose down` yourself | No |
+| `cc-container --update` actually finding something newer (force-recreates the container the same way) | No |
+
+For persistent login across the container-destroying cases above,
 add this to `docker-compose.yml`. Note `~/.claude.json` (OAuth token,
 `disabledMcpServers`, and other per-user/per-project state) is a separate
 file next to `~/.claude/`, not inside it -- both need mounting, or login
@@ -275,9 +302,12 @@ worked example of adding a custom detection rule.
 ## Testing
 
 ```bash
-./tests/run-tests.sh          # unit tests: fast, no Docker
-./tests/run-tests.sh --all    # + integration + security tests: needs Docker, builds/
-                               #   starts the stack and probes hardening/bypass attempts
+./tests/run-tests.sh                # unit tests only: fast, no Docker
+./tests/run-tests.sh --integration  # integration tests only: needs Docker
+./tests/run-tests.sh --security     # security tests only: needs Docker, probes
+                                     #   hardening/bypass attempts
+./tests/run-tests.sh --all          # all three tiers (flags are additive,
+                                     #   e.g. --integration --security also works)
 ```
 
 See `tests/README.md` for what each tier covers.

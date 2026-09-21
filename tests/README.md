@@ -81,13 +81,17 @@ enforcement) rather than general functionality.
   even for an otherwise-allowed domain.
 - `test_falco_rules.sh` — starts the stack under the `monitoring` profile
   (builds `security-monitor` too, heavier than the rest of this tier) and
-  triggers six `falco/claude-code-rules.yaml` rules inside `claude-code`
-  (unexpected shell, npm-install network tool, `/proc/*/environ` reads
-  including the `ps aux` false-positive regression guard, cloud metadata
-  contact, privilege escalation, shell-history tampering), asserting the
-  expected alert line appears in `docker compose logs security-monitor`.
-  Needs a kernel with eBPF support; soft-skips (not a hard failure) if
-  `security-monitor`'s driver fails to initialize. Does not cover the
-  desktop-notification/D-Bus path, nor "Unexpected shell"'s
+  triggers every rule in `falco/claude-code-rules.yaml` (unexpected shell,
+  npm-install network tool, `/proc/*/environ` reads including the `ps aux`
+  false-positive regression guard, cloud metadata contact, privilege
+  escalation, shell-history tampering, mount/umount, unshare, capset,
+  setuid, raw sockets, credential reads, and more — see that file for the
+  current, maintained list), asserting the expected alert line appears in
+  `docker compose logs security-monitor`. Needs a kernel with eBPF
+  support; individual checks soft-skip (not a hard failure) rather than
+  fail outright where a known host/driver limitation applies (each
+  soft-skip's own `SKIP` line explains why — see
+  `falco/claude-code-rules.yaml`'s OPEN ITEMS for the list). Does not
+  cover the desktop-notification/D-Bus path, nor "Unexpected shell"'s
   false-positive direction for a *real* assistant-issued Bash tool call —
   see `AGENTS.md` "Runtime monitoring" for that manual procedure.

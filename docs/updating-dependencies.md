@@ -7,14 +7,19 @@ the container) that keeps the image current:
 bin/update-deps.sh
 ```
 
-Alternatively, run it via `cc-container --update` (add `--force` to skip the
-"anything newer?" check and always rebuild), which runs the updater and then
-starts the stack as usual:
+Alternatively, run it via `cc-container --update` (add `--force`, or its
+short form `-f`, to skip the "anything newer?" check and always rebuild),
+which runs the updater and then starts the stack as usual:
 
 ```bash
 cc-container --update
 cc-container --update --force
+cc-container --update -f            # same as --force
 ```
+
+Any other argument is rejected outright (`bin/update-deps.sh` exits 1 with a
+usage message) — unlike `cc-container` itself, which silently ignores
+arguments it doesn't recognize (see the README's "Setup" section).
 
 It automatically, without prompting:
 
