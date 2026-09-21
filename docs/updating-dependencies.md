@@ -19,7 +19,8 @@ cc-container --update -f            # same as --force
 
 Any other argument is rejected outright (`bin/update-deps.sh` exits 1 with a
 usage message) — unlike `cc-container` itself, which silently ignores
-arguments it doesn't recognize (see the README's "Setup" section).
+arguments it doesn't recognize (see the
+[README's Setup section](../README.md#setup)).
 
 It automatically, without prompting:
 
@@ -65,8 +66,8 @@ only restarting it if the image actually changed. See
 Since builds/pulls go through the host Docker daemon, not through the
 `claude-code` container's network, this doesn't touch `squid.conf` or the
 network isolation. There's no scheduled/automatic run (no cron in the
-container, see the README's "Known limitations") — call it manually when you
-want fresh dependencies. If it does find an update, it terminates any
+container, see the [README's Known limitations](../README.md#known-limitations))
+— call it manually when you want fresh dependencies. If it does find an update, it terminates any
 interactive `claude` session inside the container (`--force-recreate`), so
 run it from the host, not from within a `cc-container` session.
 

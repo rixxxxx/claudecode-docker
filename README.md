@@ -18,7 +18,7 @@ iptables inside the container itself.
 
 - `cc-container`: the only host-side entry point. Wraps `docker compose up
   -d` + `docker compose exec claude-code claude` into one command — see
-  "Quickstart" below. When the `claude` session ends (`/exit`, Ctrl+D,
+  [Setup](#setup) below. When the `claude` session ends (`/exit`, Ctrl+D,
   Ctrl+C, or a crash), it asks whether to close the containers for this
   workspace (`docker compose down`); pressing Enter leaves them running.
 - `claude-code`: runs as a non-root user (UID 1000) and has no direct
@@ -27,10 +27,11 @@ iptables inside the container itself.
   scripts (`preinstall`/`install`/`postinstall`/`prepare`) by default —
   preventive against the classic npm supply-chain attack pattern
   (malicious `postinstall` scripts), not just Falco's after-the-fact
-  detection of it (see "Runtime monitoring" below). Breaks packages that
-  need those scripts for functionality (native binaries, `puppeteer`'s
-  Chromium download, `husky`) — uncomment `NPM_CONFIG_IGNORE_SCRIPTS=false`
-  in `.env` (see `.env.example`) to allow them again for a given workspace.
+  detection of it (see [Runtime monitoring](#runtime-monitoring-optional)
+  below). Breaks packages that need those scripts for functionality
+  (native binaries, `puppeteer`'s Chromium download, `husky`) — uncomment
+  `NPM_CONFIG_IGNORE_SCRIPTS=false` in `.env` (see
+  [.env.example](.env.example)) to allow them again for a given workspace.
 - `/workspace` inside the container is bind-mounted from the host
   directory `cc-container` was invoked from (via `HOST_WORKSPACE`, set to
   `$(pwd)`) — run it from the project you want Claude Code to work on,
@@ -80,18 +81,18 @@ behind it.)
 | `bin/cc-container`     | Host-side entry point: `docker compose up -d` + exec into `claude` |
 | `bin/update-deps.sh`   | Host-side dependency updater: rebuild + report version changes |
 | `Dockerfile`           | Builds the Claude Code image (Ubuntu 26.04, Node 24 via official tarball, gh CLI) |
-| `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (NTLM/Kerberos corporate proxy relay, see "Enterprise proxy support") |
+| `Dockerfile.proxy-auth` | Builds the `proxy-auth` sidecar (NTLM/Kerberos corporate proxy relay, see [Enterprise proxy support](#enterprise-proxy-support)) |
 | `proxy-auth-entrypoint.sh` | Entrypoint for `proxy-auth`, launches `px` against the rendered config |
-| `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco), see "Runtime monitoring (optional)" |
+| `Dockerfile.security-monitor` | Builds the optional `security-monitor` sidecar (Falco), see [Runtime monitoring](#runtime-monitoring-optional) |
 | `falco/`               | Falco config + custom rules for `security-monitor`             |
 | `falco-notify.sh`      | Turns a Falco alert into a native desktop notification, counts alerts toward the auto-stop threshold |
-| `Dockerfile.stop-watcher` | Builds the optional `stop-watcher` sidecar, stops `claude-code` after repeated CRITICAL alerts, see "Runtime monitoring (optional)" |
+| `Dockerfile.stop-watcher` | Builds the optional `stop-watcher` sidecar, stops `claude-code` after repeated CRITICAL alerts, see [Runtime monitoring](#runtime-monitoring-optional) |
 | `stop-watcher-entrypoint.sh` | Watches for the stop trigger and calls the Docker API over `docker.sock` |
 | `docker-compose.yml`   | Orchestrates `claude-code` + `egress-proxy` (+ optional `proxy-auth`/`security-monitor`/`stop-watcher`), defines networks |
 | `squid.conf`           | Domain allowlist for the egress proxy                          |
 | `certs/`               | Optional enterprise root CA(s) (`*.crt`), trusted at image build time |
 | `.env.example`         | Template for `.env` — API key, enterprise proxy settings       |
-| `tests/`               | Test suite — see "Testing" below and `tests/README.md`         |
+| `tests/`               | Test suite — see [Testing](#testing) below and [tests/README.md](tests/README.md) |
 | `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell (container PID 1) |
 | `.dockerignore`        | Excludes secrets, node_modules, .git etc. from the build context |
 | `.gitignore`           | Excludes secrets, credentials, build artifacts from the repo   |
@@ -155,7 +156,7 @@ silently ignored rather than passed through to `claude` or erroring.
    The login link must be opened in the host browser (no browser inside
    the container). The OAuth callback goes through `claude.ai` — this
    domain is allowed in `squid.conf`. For persistent login across restarts,
-   see "Persistence" below.
+   see [Persistence](#persistence) below.
 
 <details>
 <summary>Manual steps (what <code>cc-container</code> does under the hood)</summary>
@@ -176,7 +177,8 @@ By default, the OAuth login is lost whenever the `claude-code` container
 itself is removed or recreated, since `/home/claudecode/.claude` isn't
 mounted — including the automatic prompt `cc-container` shows every time
 your `claude` session ends (`/exit`, Ctrl+D, Ctrl+C, or a crash; see
-"Architecture" above), not just a manually-typed `docker compose down`:
+[Architecture](#architecture) above), not just a manually-typed
+`docker compose down`:
 
 | Event | Login survives? |
 |-------|------------------|
@@ -222,7 +224,7 @@ you've never run `claude` on the host.
 
 **Note on multiple instances:** a named volume like `claude-config` above
 is scoped to the Compose project, and each workspace now runs as its own
-project (see "Multiple instances") — so every workspace would get its
+project (see [Multiple instances](#multiple-instances)) — so every workspace would get its
 own separate login/config, requiring `/login` again in each. The host
 bind-mount alternative (`${HOME}/.claude:/home/claudecode/.claude`) isn't
 project-scoped and is shared across all workspaces automatically; use
@@ -244,7 +246,7 @@ RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/in
 `rtk init -g` registers a PreToolUse hook in Claude Code's **global**
 config, which lives under `/home/claudecode/.claude`.
 
-**Caveat with persistent login (see "Persistence" above):** if you mount a
+**Caveat with persistent login (see [Persistence](#persistence) above):** if you mount a
 volume over `/home/claudecode/.claude` (either a named volume or your
 host's `~/.claude`), it shadows the config baked into the image — including
 the RTK hook. After the first `docker compose up` with such a mount, run
@@ -310,7 +312,7 @@ worked example of adding a custom detection rule.
                                      #   e.g. --integration --security also works)
 ```
 
-See `tests/README.md` for what each tier covers.
+See [tests/README.md](tests/README.md) for what each tier covers.
 
 ## Troubleshooting
 

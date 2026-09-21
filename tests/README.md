@@ -1,8 +1,8 @@
 # Tests
 
 No external test framework — a small, self-rolled bash setup consistent
-with the rest of this repo (no `package.json`/`Makefile`). See `lib/assert.sh`
-for the assertion helpers used throughout.
+with the rest of this repo (no `package.json`/`Makefile`). See
+[lib/assert.sh](lib/assert.sh) for the assertion helpers used throughout.
 
 ```bash
 ./run-tests.sh               # unit tests only (fast, no Docker)
@@ -25,13 +25,13 @@ project-name/cleanup helpers used by both `integration/` and `security/`.
   (`apt install shellcheck` / `brew install shellcheck`); soft-skips
   otherwise, not a hard dependency of this repo.
 - `test_render_upstream_proxy_conf.sh` — the `HTTP(S)_PROXY` parsing +
-  Squid/`px` config rendering logic in `bin/cc-container` (see README
-  "Enterprise proxy support"), sourced directly (safe: the script is
-  guarded so sourcing it only defines functions, see the bottom of
-  `bin/cc-container`).
+  Squid/`px` config rendering logic in `bin/cc-container` (see
+  [docs/enterprise-proxy.md](../docs/enterprise-proxy.md)), sourced
+  directly (safe: the script is guarded so sourcing it only defines
+  functions, see the bottom of `bin/cc-container`).
 - `test_compose_project_name.sh` — the per-workspace
-  `COMPOSE_PROJECT_NAME` derivation (see `AGENTS.md` "Multi-instance
-  invariants").
+  `COMPOSE_PROJECT_NAME` derivation (see [AGENTS.md](../AGENTS.md)
+  "Multi-instance invariants").
 - `test_install_uninstall.sh` — `install.sh`/`uninstall.sh` run as real
   subprocesses against a throwaway `HOME` with a stubbed `docker` on
   `PATH`. Doesn't cover the interactive Docker-image-purge prompt in
@@ -56,8 +56,9 @@ containers/networks started by an actual `cc-container` session.
   and the merged `squid.conf` parses cleanly.
 
 Not covered: an actual NTLM/Kerberos handshake against a real corporate
-proxy (not realistically automatable without one) — see `README.md`
-"Enterprise proxy support" for the manual verification note on `px`.
+proxy (not realistically automatable without one) — see
+[docs/enterprise-proxy.md](../docs/enterprise-proxy.md) for the setup this
+would exercise.
 
 ## security/ — needs Docker, hardening/adversarial checks
 
@@ -85,13 +86,15 @@ enforcement) rather than general functionality.
   npm-install network tool, `/proc/*/environ` reads including the `ps aux`
   false-positive regression guard, cloud metadata contact, privilege
   escalation, shell-history tampering, mount/umount, unshare, capset,
-  setuid, raw sockets, credential reads, and more — see that file for the
+  setuid, raw sockets, credential reads, and more — see
+  [falco/claude-code-rules.yaml](../falco/claude-code-rules.yaml) for the
   current, maintained list), asserting the expected alert line appears in
   `docker compose logs security-monitor`. Needs a kernel with eBPF
   support; individual checks soft-skip (not a hard failure) rather than
   fail outright where a known host/driver limitation applies (each
-  soft-skip's own `SKIP` line explains why — see
-  `falco/claude-code-rules.yaml`'s OPEN ITEMS for the list). Does not
+  soft-skip's own `SKIP` line explains why — see that same file's OPEN
+  ITEMS block for the list). Does not
   cover the desktop-notification/D-Bus path, nor "Unexpected shell"'s
   false-positive direction for a *real* assistant-issued Bash tool call —
-  see `AGENTS.md` "Runtime monitoring" for that manual procedure.
+  see [AGENTS.md](../AGENTS.md#runtime-monitoring) "Runtime monitoring" for
+  that manual procedure.

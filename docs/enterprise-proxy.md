@@ -35,7 +35,8 @@ corporate proxy and exposes a plain local proxy that `egress-proxy` chains
 to instead. It only runs when actually needed (via a Compose profile) — no
 extra container for the common Basic-auth-or-no-proxy case. `proxy-auth`
 sits on a dedicated `proxy-chain` network that `claude-code` never joins,
-so the sandbox can't reach it directly (see `AGENTS.md`).
+so the sandbox can't reach it directly (see
+[AGENTS.md](../AGENTS.md#enterprise-proxy-support)).
 
 For Kerberos specifically, also set (Linux hosts with an existing `kinit`
 ticket only — Windows/macOS domain SSO passthrough isn't supported):

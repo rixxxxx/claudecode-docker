@@ -77,8 +77,9 @@ don't want every workspace on every machine to trust it.
 
    You should see `TCP_TUNNEL`/`TCP_MISS` (allowed) rather than
    `TCP_DENIED`. A domain that's still blocked (e.g. before the restart, or
-   a typo in the ACL) shows up as `TCP_DENIED` — see the README's
-   "Troubleshooting" section for that pattern.
+   a typo in the ACL) shows up as `TCP_DENIED` — see the
+   [README's Troubleshooting section](../README.md#troubleshooting) for
+   that pattern.
 
 4. To make this available to *every* workspace instead, move the same
    `acl allowed_domains dstdomain ...` line into

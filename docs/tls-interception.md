@@ -16,8 +16,8 @@ long-base64 query string, a non-allowlisted domain stays blocked, and an
 allowlisted domain stays reachable. Default (non-SSL-Bump) usage remains
 completely unaffected — the whole feature stays isolated behind
 `SQUID_HTTP_PORT_DIR`/`SQUID_SSLBUMP_DIR`/`SQUID_BUMP_CA_DIR`, all
-defaulting to inert placeholders (see `AGENTS.md` "SSL Bump support" for
-the mechanism).
+defaulting to inert placeholders (see
+[AGENTS.md](../AGENTS.md#ssl-bump-support-optional) for the mechanism).
 
 By default, `egress-proxy` only sees the *domain* of an HTTPS request (via
 CONNECT) — never the path or query string, since the connection is
@@ -65,10 +65,11 @@ PyPI, crates.io, npm, RubyGems, Packagist, Django docs, Wikipedia,
 PostgreSQL docs — see that file for the exact list) to their own
 search-query endpoint only, denying everything else on those domains —
 live-verified via `TEST_SSL_BUMP=1 tests/integration/test_ssl_bump.sh`
-(see `20-search-only.conf`'s own header comment and `AGENTS.md`
-"Security-critical files" for the two real-world gotchas that surfaced
-along the way, e.g. crates.io 403ing a bare `curl` request over
-User-Agent filtering). Domains where the site's own search has no simple,
+(see
+[.squid-sslbump-enabled/20-search-only.conf](../.squid-sslbump-enabled/20-search-only.conf)'s
+own header comment and [AGENTS.md](../AGENTS.md) "Security-critical
+files" for the two real-world gotchas that surfaced along the way, e.g.
+crates.io 403ing a bare `curl` request over User-Agent filtering). Domains where the site's own search has no simple,
 restrictable server-side endpoint (rustdoc, devdocs.io, Python's Sphinx
 docs, most Algolia-DocSearch-backed sites, Redis/AWS docs' JS-SPA search,
 Docker/Falco/Google Cloud docs, MySQL docs) are deliberately left fully
@@ -78,8 +79,9 @@ third-party search backend for
 react.dev/vuejs.org/angular.dev/kubernetes.io) are separately allowlisted
 and restricted to just the query API path.
 
-**Limitations (see `falco/claude-code-rules.yaml` OPEN ITEMS "Third pass"
-and this feature's own commit for open items):**
+**Limitations (see
+[falco/claude-code-rules.yaml](../falco/claude-code-rules.yaml)'s OPEN
+ITEMS "Third pass" and this feature's own commit for open items):**
 - Node/Bun (npm, the claude-code CLI itself) need `NODE_EXTRA_CA_CERTS`
   (already set, see above); `curl`/`git`/`gh`/apt trust the bumped CA via
   the system store. Python (`pip`/`requests`) CA trust is not explicitly
@@ -87,8 +89,9 @@ and this feature's own commit for open items):**
   `certifi`/OpenSSL defaults, but not verified.
 - Turning this on makes `egress-proxy` a decryption point for all of
   `claude-code`'s allowed HTTPS traffic, including its own conversation
-  with `api.anthropic.com` — a real trade-off (see AGENTS.md/this
-  feature's design notes), not just a filtering upgrade.
+  with `api.anthropic.com` — a real trade-off (see
+  [AGENTS.md](../AGENTS.md#ssl-bump-support-optional) for the design
+  notes), not just a filtering upgrade.
 
 ## Worked example: blocking a new exfiltration-shaped URL pattern
 
