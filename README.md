@@ -97,6 +97,7 @@ behind it.)
 | `certs/`               | Optional enterprise root CA(s) (`*.crt`), trusted at image build time |
 | `.env.example`         | Template for `.env` — API key, enterprise proxy settings       |
 | `tests/`               | Test suite — see [Testing](#testing) and [tests/README.md](tests/README.md) |
+| `windows/`             | Windows onboarding installer (experimental), see [Windows](#windows-experimental) |
 | `entrypoint.sh`        | Terminal setup + welcome banner, starts an interactive shell (container PID 1) |
 | `.dockerignore`        | Excludes secrets, node_modules, .git etc. from the build context |
 | `.gitignore`           | Excludes secrets, credentials, build artifacts from the repo   |
@@ -174,6 +175,20 @@ docker compose exec claude-code bash   # or: docker compose exec claude-code cla
 ```
 
 </details>
+
+## Windows (experimental)
+
+The Setup steps above assume a working Docker/Compose host already. On a
+stock Windows machine with nothing Docker-related installed yet,
+`windows/claudecode-sandbox-setup.exe` (built from `windows/main.go`, see
+[docs/windows-onboarding.md](docs/windows-onboarding.md)) automates getting
+there instead: checks BIOS virtualization, enables WSL2 with mirrored
+networking, imports a vanilla Ubuntu 26.04, installs Docker Engine from
+Docker's own apt repo, then clones this repo and runs `install.sh` inside
+it — one double-click (with a UAC prompt), safely re-run if a first-time
+WSL2 install needs a reboot in between. See that doc for exactly what it
+does, how to build it, and its current limitations (not yet verified on
+real Windows hardware).
 
 ## Persistence
 
