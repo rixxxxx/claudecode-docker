@@ -44,7 +44,7 @@ flowchart TD
     B -->|enabled| C["Ensure WSL2 installed"]
     C -->|"just installed<br/>(needs reboot)"| C1["Ask for reboot,<br/>exit"]
     C -->|ready| D["Enable mirrored<br/>networking (.wslconfig)"]
-    D --> E["Import vanilla Ubuntu 26.04<br/>(SHA256-verified)"]
+    D --> E["Import vanilla Ubuntu 26.04<br/>(GPG + SHA256 verified)"]
     E --> E2["Create non-root<br/>user (UID 1000)"]
     E2 --> F["Enable systemd +<br/>default user"]
     F --> G["Install Docker Engine<br/>(Docker's own apt repo)"]
@@ -72,11 +72,26 @@ first time, just continues instead of starting over.
   affects how WSL2 itself reaches the network; it has no effect on (and
   needs no changes to) this repo's own `internal`/`external` Docker networks
   inside the distro.
-- **Ubuntu 26.04 import**: downloads Canonical's official WSL rootfs
-  tarball and `wsl --import`s it as a distro named `ClaudeCodeSandbox` — a
-  vanilla import, not the customized Microsoft Store app. The download's
-  SHA256 is checked against the `SHA256SUMS` file in the same release
-  directory before importing; a mismatch or a missing entry aborts.
+- **Ubuntu 26.04 import**: `wsl --import`s Canonical's official `.wsl`
+  image as a distro named `ClaudeCodeSandbox` — a vanilla import, not the
+  customized Microsoft Store app. Before importing, two checks, either of
+  which aborts on failure:
+  1. `SHA256SUMS.gpg` must be a valid OpenPGP signature over `SHA256SUMS`
+     by the pinned **Ubuntu CD Image Automatic Signing Key (2012)**
+     (`843938DF228D22F7B3742BC0D94AA3F0EFE21092`). A hash alone would only
+     prove the image matches whatever server it came from. The key is
+     embedded in the `.exe` (`windows/keys/`, exported from the
+     `ubuntu-keyring` package), verified with a small stdlib-only
+     implementation (`windows/openpgp.go`) — no `gpg.exe` needed on Windows.
+  2. The image's SHA256 must match its entry in that signed `SHA256SUMS`.
+
+  **Where the image comes from:** if a folder named `wsl-image` sits next
+  to the `.exe` (or `-image-dir` points somewhere), it's used offline and
+  must contain exactly one `*.wsl` image, one `SHA256SUMS*` file (a suffix
+  like `SHA256SUMS_ubuntu-26.04` is fine), and that file's `.gpg`
+  signature (`SHA256SUMS_ubuntu-26.04.gpg`). The image file name must stay
+  as Canonical published it, since that's what `SHA256SUMS` lists.
+  Otherwise all three are downloaded from `releases.ubuntu.com`.
 - **Non-root user**: an imported rootfs logs in as root by default, which
   would leave `install.sh`, `cc-container`, and every workspace owned by
   root — and the `claude-code` container (UID 1000) unable to write to its
@@ -106,11 +121,11 @@ until Enter is pressed, since the UAC relaunch runs in its own window.
 
 | Flag | Purpose |
 |------|---------|
-| `-rootfs-url <url>` | Use a different Ubuntu WSL rootfs than the built-in default (see "Known limitations"). Its checksum is looked up in `SHA256SUMS` next to it. `.wsl` files work too — they're tar archives `wsl --import` accepts. |
-| `-rootfs-sha256 <hex>` | Expected SHA256, for a mirror without a `SHA256SUMS` file. |
+| `-image-dir <folder>` | Local image folder (see above) instead of the default `wsl-image` next to the `.exe`. |
+| `-rootfs-url <url>` | Image to download when there's no local folder, instead of the built-in default (see "Known limitations"). `SHA256SUMS` and `SHA256SUMS.gpg` are fetched from the same directory and checked the same way. |
 
 Flags are forwarded to the elevated copy after the UAC prompt. Run it from a
-terminal, e.g. `.\claudecode-sandbox-setup.exe -rootfs-url https://…`.
+terminal, e.g. `.\claudecode-sandbox-setup.exe -image-dir D:\ubuntu`.
 
 ## Building
 
@@ -124,7 +139,10 @@ release tooling only, same category as `bin/generate-bump-ca.sh`.
 
 `cd windows && go vet ./... && go test ./...` runs the unit tests for the
 platform-independent helpers (`.wslconfig` merging, username derivation,
-`SHA256SUMS` parsing); `tests/unit/test_windows_installer.sh` wraps the same
+`SHA256SUMS` parsing, local image folder lookup) and the OpenPGP check
+against Canonical's real, unmodified 26.04 `SHA256SUMS`/`SHA256SUMS.gpg`
+(`windows/testdata/`), including tampered-data and corrupted-signature
+rejection; `tests/unit/test_windows_installer.sh` wraps the same
 plus a Windows cross-compile, and soft-skips without Go.
 
 ## Known limitations
@@ -134,12 +152,15 @@ plus a Windows cross-compile, and soft-skips without Go.
   the source cross-compiles, but an actual double-click run — including the
   BIOS-disabled path and the reboot-and-resume path — still needs to happen
   on a real machine before this is trustworthy for anyone else.
-- **The Ubuntu 26.04 WSL rootfs URL** in `windows/main.go`
-  (`defaultRootfsURL`) is the older `cloud-images.ubuntu.com/wsl/` naming
-  *pattern*, applied to 26.04. Since 24.04 Canonical has also been
-  publishing `.wsl` images under `releases.ubuntu.com`, so the default may
-  well be wrong. Confirm it against what Canonical has actually published,
-  and until then pass the right URL via `-rootfs-url` (no rebuild needed).
+- **The default image URL names a point release**
+  (`defaultRootfsURL` in `windows/main.go`,
+  `releases.ubuntu.com/26.04/ubuntu-26.04.1-wsl-amd64.wsl`, confirmed
+  2026-09-25 against Canonical's signed `SHA256SUMS`). It goes stale once
+  26.04.2 replaces it in that directory; `-rootfs-url` or a local
+  `wsl-image` folder work around that without a rebuild.
+- **Only one pinned signing key.** If Canonical ever rotates the CD Image
+  key, the signature check fails closed until `windows/keys/` and
+  `trustedFingerprints` in `windows/openpgp.go` are updated.
 - **First-run friction is real**, not hidden: enabling WSL2 for the first
   time commonly needs one reboot. The tool is designed to be safely re-run
   rather than pretending this away, but it is still a two-step experience
@@ -162,8 +183,10 @@ virtualization), with each result dated back into this doc before the
       appear, window stays open until Enter, nothing else is changed.
 - [ ] Fresh machine without WSL: WSL2 installs, the reboot prompt appears;
       after the reboot, running the `.exe` again picks up where it left off.
-- [ ] The rootfs URL resolves and the SHA256 check passes (otherwise:
-      record the correct URL here and update `defaultRootfsURL`).
+- [ ] With a `wsl-image` folder next to the `.exe`: "signature is valid"
+      and "SHA256 … matches" appear, nothing is downloaded.
+- [ ] Without it: the default URL downloads and passes both checks
+      (otherwise: record the correct URL here, update `defaultRootfsURL`).
 - [ ] Running it a second time right after success: every stage reports
       done, no redownload, no `wsl --terminate`.
 - [ ] An existing `%USERPROFILE%\.wslconfig` with other keys keeps them.

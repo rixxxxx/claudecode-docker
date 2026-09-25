@@ -38,18 +38,21 @@ const (
 	linuxUID         = 1000
 	fallbackUsername = "claude"
 
-	// Open item (see docs/windows-onboarding.md "Known limitations"): confirm
-	// this against Canonical's actual published WSL rootfs layout for 26.04
-	// before the first real run -- overridable via -rootfs-url for exactly
-	// this reason, so a wrong guess here doesn't need a rebuild.
-	defaultRootfsURL = "https://cloud-images.ubuntu.com/wsl/releases/26.04/current/ubuntu-26.04-wsl-amd64-wsl.rootfs.tar.gz"
+	// Confirmed 2026-09-25 against Canonical's signed SHA256SUMS for 26.04.
+	// Names the point release, so it goes stale with the next one (26.04.2)
+	// -- overridable via -rootfs-url for exactly this reason.
+	defaultRootfsURL = "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-wsl-amd64.wsl"
+
+	// Folder next to the .exe that, if present, supplies the image and its
+	// SHA256SUMS/SHA256SUMS.gpg locally instead of downloading them.
+	localImageDirName = "wsl-image"
 )
 
 var (
 	rootfsURL = flag.String("rootfs-url", defaultRootfsURL,
-		"Ubuntu 26.04 WSL rootfs to import; its SHA256 is looked up in SHA256SUMS next to it")
-	rootfsSHA256 = flag.String("rootfs-sha256", "",
-		"expected SHA256 of the rootfs, for mirrors without a SHA256SUMS file")
+		"Ubuntu WSL image to download when no local image folder exists; SHA256SUMS(.gpg) are fetched from the same directory")
+	imageDir = flag.String("image-dir", "",
+		"folder with a local .wsl image plus SHA256SUMS and SHA256SUMS.gpg (default: "+localImageDirName+" next to this .exe, if it exists)")
 )
 
 func main() {
@@ -360,33 +363,139 @@ func importUbuntu() error {
 		return err
 	}
 
-	expected := strings.ToLower(strings.TrimSpace(*rootfsSHA256))
-	if expected == "" {
-		sumsURL, fileName := sha256SumsURL(*rootfsURL)
-		fmt.Println("    Fetching checksum from " + sumsURL)
-		sums, err := fetchString(sumsURL)
-		if err != nil {
-			return fmt.Errorf("fetching SHA256SUMS (pass -rootfs-sha256 for a mirror without one): %w", err)
+	img, cleanup, err := fetchVerifiedImage()
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	return wslStream("--import", distroName, installDir, img, "--version", "2")
+}
+
+// fetchVerifiedImage returns the path of an Ubuntu WSL image whose SHA256
+// matches Canonical's SHA256SUMS, after first checking SHA256SUMS.gpg
+// against the pinned Canonical key (see openpgp.go) -- a hash alone only
+// proves the download matches whatever server it came from. Uses a local
+// image folder when there is one, downloads otherwise; the returned cleanup
+// removes a downloaded temp file and never touches local files.
+func fetchVerifiedImage() (img string, cleanup func(), err error) {
+	cleanup = func() {}
+	keys, err := trustedKeys()
+	if err != nil {
+		return "", cleanup, err
+	}
+
+	var sums, sig []byte
+	var imgName string
+	dir, local, err := resolveImageDir()
+	if err != nil {
+		return "", cleanup, err
+	}
+	if local {
+		var sumsPath string
+		if img, sumsPath, err = findLocalImage(dir); err != nil {
+			return "", cleanup, err
 		}
-		var found bool
-		if expected, found = parseSHA256Sums(sums, fileName); !found {
-			return fmt.Errorf("%s is not listed in %s", fileName, sumsURL)
+		imgName = filepath.Base(img)
+		fmt.Println("    Using local " + img)
+		if sums, err = os.ReadFile(sumsPath); err != nil {
+			return "", cleanup, err
+		}
+		if sig, err = os.ReadFile(sumsPath + ".gpg"); err != nil {
+			return "", cleanup, err
+		}
+	} else {
+		var sumsURL string
+		sumsURL, imgName = sha256SumsURL(*rootfsURL)
+		fmt.Println("    Fetching " + sumsURL + "(.gpg)")
+		if sums, err = fetchBytes(sumsURL); err != nil {
+			return "", cleanup, err
+		}
+		if sig, err = fetchBytes(sumsURL + ".gpg"); err != nil {
+			return "", cleanup, err
 		}
 	}
 
-	rootfsPath := filepath.Join(os.TempDir(), "claudecode-sandbox-"+path.Base(*rootfsURL))
-	fmt.Println("    Downloading " + *rootfsURL)
-	actual, err := downloadFile(*rootfsURL, rootfsPath)
-	defer os.Remove(rootfsPath)
+	key, err := verifyDetachedSignature(sums, sig, keys)
 	if err != nil {
-		return fmt.Errorf("downloading rootfs: %w", err)
+		return "", cleanup, fmt.Errorf("SHA256SUMS signature check failed -- refusing to import: %w", err)
+	}
+	ok("SHA256SUMS signature is valid (" + trustedFingerprints[key.fingerprint] + ", " + key.fingerprint + ")")
+
+	expected, found := parseSHA256Sums(string(sums), imgName)
+	if !found {
+		return "", cleanup, fmt.Errorf("%s is not listed in the signed SHA256SUMS (renamed file, or SHA256SUMS from a different release?)", imgName)
+	}
+
+	var actual string
+	if local {
+		fmt.Println("    Hashing " + imgName)
+		actual, err = hashFile(img)
+	} else {
+		img = filepath.Join(os.TempDir(), "claudecode-sandbox-"+path.Base(*rootfsURL))
+		cleanup = func() { os.Remove(img) }
+		fmt.Println("    Downloading " + *rootfsURL)
+		actual, err = downloadFile(*rootfsURL, img)
+	}
+	if err != nil {
+		return "", cleanup, err
 	}
 	if actual != expected {
-		return fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s -- refusing to import", *rootfsURL, expected, actual)
+		return "", cleanup, fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s -- refusing to import", imgName, expected, actual)
 	}
-	ok("SHA256 verified")
+	ok("SHA256 of " + imgName + " matches the signed SHA256SUMS")
+	return img, cleanup, nil
+}
 
-	return wslStream("--import", distroName, installDir, rootfsPath, "--version", "2")
+// resolveImageDir picks the local image folder: -image-dir if given (must
+// exist), else wsl-image next to the .exe if that exists, else none.
+func resolveImageDir() (dir string, local bool, err error) {
+	if *imageDir != "" {
+		if fi, err := os.Stat(*imageDir); err != nil || !fi.IsDir() {
+			return "", false, fmt.Errorf("-image-dir %s is not a folder", *imageDir)
+		}
+		return *imageDir, true, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", false, nil
+	}
+	dir = filepath.Join(filepath.Dir(exe), localImageDirName)
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return dir, true, nil
+	}
+	return "", false, nil
+}
+
+// findLocalImage expects exactly one *.wsl image and exactly one
+// SHA256SUMS* checksum file (any suffix, e.g. SHA256SUMS_ubuntu-26.04 as a
+// browser/manual rename would leave it) with its .gpg signature next to it.
+func findLocalImage(dir string) (img, sums string, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", "", err
+	}
+	var imgs, sumsFiles []string
+	for _, e := range entries {
+		name := e.Name()
+		switch {
+		case e.IsDir():
+		case strings.HasSuffix(strings.ToLower(name), ".wsl"):
+			imgs = append(imgs, name)
+		case strings.HasPrefix(name, "SHA256SUMS") && !strings.HasSuffix(name, ".gpg"):
+			sumsFiles = append(sumsFiles, name)
+		}
+	}
+	if len(imgs) != 1 {
+		return "", "", fmt.Errorf("%s: expected exactly one .wsl image, found %d %v", dir, len(imgs), imgs)
+	}
+	if len(sumsFiles) != 1 {
+		return "", "", fmt.Errorf("%s: expected exactly one SHA256SUMS file, found %d %v", dir, len(sumsFiles), sumsFiles)
+	}
+	sums = filepath.Join(dir, sumsFiles[0])
+	if _, err := os.Stat(sums + ".gpg"); err != nil {
+		return "", "", fmt.Errorf("%s: signature %s.gpg is missing", dir, sumsFiles[0])
+	}
+	return filepath.Join(dir, imgs[0]), sums, nil
 }
 
 // sha256SumsURL returns the SHA256SUMS URL sitting next to the given file
@@ -412,17 +521,29 @@ func parseSHA256Sums(sums, fileName string) (string, bool) {
 	return "", false
 }
 
-func fetchString(url string) (string, error) {
+func fetchBytes(url string) ([]byte, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status %s fetching %s", resp.Status, url)
+		return nil, fmt.Errorf("unexpected status %s fetching %s", resp.Status, url)
 	}
-	body, err := io.ReadAll(resp.Body)
-	return string(body), err
+	return io.ReadAll(resp.Body)
+}
+
+func hashFile(name string) (string, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // downloadFile saves url to dest and returns the hex SHA256 of what it wrote.

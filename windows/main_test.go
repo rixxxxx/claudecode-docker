@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,5 +92,32 @@ func TestParseSHA256Sums(t *testing.T) {
 func TestPSQuote(t *testing.T) {
 	if got := psQuote(`C:\Users\O'Brien\setup.exe`); got != `'C:\Users\O''Brien\setup.exe'` {
 		t.Errorf("got %s", got)
+	}
+}
+
+func TestFindLocalImage(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"ubuntu-26.04.1-wsl-amd64.wsl", "SHA256SUMS_ubuntu-26.04", "SHA256SUMS_ubuntu-26.04.gpg", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	img, sums, err := findLocalImage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img != filepath.Join(dir, "ubuntu-26.04.1-wsl-amd64.wsl") || sums != filepath.Join(dir, "SHA256SUMS_ubuntu-26.04") {
+		t.Errorf("got (%q, %q)", img, sums)
+	}
+
+	os.Remove(filepath.Join(dir, "SHA256SUMS_ubuntu-26.04.gpg"))
+	if _, _, err := findLocalImage(dir); err == nil {
+		t.Error("missing .gpg signature not reported")
+	}
+
+	os.WriteFile(filepath.Join(dir, "SHA256SUMS_ubuntu-26.04.gpg"), nil, 0o644)
+	os.WriteFile(filepath.Join(dir, "second.wsl"), nil, 0o644)
+	if _, _, err := findLocalImage(dir); err == nil {
+		t.Error("two .wsl images not reported as ambiguous")
 	}
 }

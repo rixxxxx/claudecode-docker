@@ -38,7 +38,9 @@ project-name/cleanup helpers used by both `integration/` and `security/`.
   `uninstall.sh` (needs a real tty) — that path is small enough to verify
   by hand when touched.
 - `test_windows_installer.sh` — `go vet`, `go test` (`windows/main_test.go`:
-  the platform-independent `.wslconfig`/username/checksum helpers), and a
+  the platform-independent `.wslconfig`/username/checksum helpers, plus
+  `windows/openpgp_test.go`: the SHA256SUMS signature check against
+  Canonical's real signed files in `windows/testdata/`), and a
   `GOOS=windows` cross-compile of the onboarding installer (see
   [docs/windows-onboarding.md](../docs/windows-onboarding.md)), if Go is
   installed; soft-skips otherwise, same as `test_shellcheck.sh`. Everything

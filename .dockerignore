@@ -40,4 +40,4 @@ build
 *.log
 
 # Local Ubuntu WSL image for windows/ testing (~400 MB) -- never in build context
-wsl-image
+windows/wsl-image
