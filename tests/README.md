@@ -37,6 +37,13 @@ project-name/cleanup helpers used by both `integration/` and `security/`.
   `PATH`. Doesn't cover the interactive Docker-image-purge prompt in
   `uninstall.sh` (needs a real tty) — that path is small enough to verify
   by hand when touched.
+- `test_windows_installer.sh` — `go vet`, `go test` (`windows/main_test.go`:
+  the platform-independent `.wslconfig`/username/checksum helpers), and a
+  `GOOS=windows` cross-compile of the onboarding installer (see
+  [docs/windows-onboarding.md](../docs/windows-onboarding.md)), if Go is
+  installed; soft-skips otherwise, same as `test_shellcheck.sh`. Everything
+  that actually calls `wsl.exe`/PowerShell is only verifiable on real
+  Windows — see that doc's hardware test checklist.
 
 ## integration/ — needs Docker, slower
 

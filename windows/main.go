@@ -1,9 +1,10 @@
 // Windows one-click onboarding for this repo: checks virtualization, enables
-// WSL2, imports a vanilla Ubuntu 26.04, installs Docker Engine from Docker's
-// own apt repo (not Ubuntu's outdated docker.io package), then clones this
-// repo and runs its own install.sh inside WSL. See
-// docs/windows-onboarding.md for the user-facing explanation and the known
-// limitations (first-run reboot, the rootfs URL below needing confirmation).
+// WSL2, imports a vanilla Ubuntu 26.04, creates a non-root default user,
+// installs Docker Engine from Docker's own apt repo (not Ubuntu's outdated
+// docker.io package), then clones this repo and runs its own install.sh
+// inside WSL as that user. See docs/windows-onboarding.md for the
+// user-facing explanation and the known limitations (first-run reboot, the
+// rootfs URL below needing confirmation).
 //
 // Every stage below checks whether it's already done before acting, so
 // re-running this same .exe (e.g. after the reboot WSL2 enablement usually
@@ -11,12 +12,18 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -25,14 +32,28 @@ const (
 	repoURL    = "https://github.com/rixxxxx/claudecode-docker.git"
 	repoDir    = "claudecode-docker"
 
+	// The claude-code container runs as UID 1000 (see Dockerfile) -- the WSL
+	// user owning the workspaces has to match, or the container can't write
+	// to its own bind-mounted /workspace.
+	linuxUID         = 1000
+	fallbackUsername = "claude"
+
 	// Open item (see docs/windows-onboarding.md "Known limitations"): confirm
 	// this against Canonical's actual published WSL rootfs layout for 26.04
-	// before the first real run -- kept as a single constant for exactly
-	// this reason.
-	ubuntuRootfsURL = "https://cloud-images.ubuntu.com/wsl/releases/26.04/current/ubuntu-26.04-wsl-amd64-wsl.rootfs.tar.gz"
+	// before the first real run -- overridable via -rootfs-url for exactly
+	// this reason, so a wrong guess here doesn't need a rebuild.
+	defaultRootfsURL = "https://cloud-images.ubuntu.com/wsl/releases/26.04/current/ubuntu-26.04-wsl-amd64-wsl.rootfs.tar.gz"
+)
+
+var (
+	rootfsURL = flag.String("rootfs-url", defaultRootfsURL,
+		"Ubuntu 26.04 WSL rootfs to import; its SHA256 is looked up in SHA256SUMS next to it")
+	rootfsSHA256 = flag.String("rootfs-sha256", "",
+		"expected SHA256 of the rootfs, for mirrors without a SHA256SUMS file")
 )
 
 func main() {
+	flag.Parse()
 	ensureElevated()
 
 	step("Checking virtualization firmware")
@@ -75,11 +96,18 @@ func main() {
 	}
 	ok(distroName + " is imported")
 
-	step("Enabling systemd inside " + distroName)
-	if err := ensureSystemd(); err != nil {
-		fail("Failed to enable systemd: " + err.Error())
+	step("Creating a non-root user (UID " + fmt.Sprint(linuxUID) + ") inside " + distroName)
+	user, err := ensureUser(linuxUsername(os.Getenv("USERNAME")))
+	if err != nil {
+		fail("Failed to create the user: " + err.Error())
 	}
-	ok("systemd is enabled")
+	ok("User " + user + " is ready")
+
+	step("Enabling systemd and the default user inside " + distroName)
+	if err := ensureWSLConf(user); err != nil {
+		fail("Failed to write /etc/wsl.conf: " + err.Error())
+	}
+	ok("systemd is enabled, " + user + " is the default user")
 
 	step("Installing Docker Engine from Docker's official apt repo")
 	if !dockerInstalled() {
@@ -87,19 +115,23 @@ func main() {
 			fail("Failed to install Docker: " + err.Error())
 		}
 	}
-	ok("Docker Engine is installed")
+	if err := ensureDockerGroup(user); err != nil {
+		fail("Failed to add " + user + " to the docker group: " + err.Error())
+	}
+	ok("Docker Engine is installed, " + user + " can use it without sudo")
 
-	step("Cloning this repo and running install.sh")
-	if err := cloneAndInstall(); err != nil {
+	step("Cloning this repo and running install.sh as " + user)
+	if err := cloneAndInstall(user); err != nil {
 		fail("Failed to set up the repo: " + err.Error())
 	}
 	ok("install.sh completed")
 
 	fmt.Println()
 	fmt.Println("==> All done. To get started:")
-	fmt.Println("      1. Open \"Ubuntu\" via: wsl -d " + distroName)
+	fmt.Println("      1. Open the sandbox distro (logs in as " + user + "): wsl -d " + distroName)
 	fmt.Println("      2. cd into a project directory")
 	fmt.Println("      3. Run: cc-container")
+	waitForEnter()
 }
 
 // --- output helpers, matching this repo's bash scripts' "==>" log style ---
@@ -108,7 +140,16 @@ func step(msg string) { fmt.Println("==> " + msg + "...") }
 func ok(msg string)   { fmt.Println("    " + msg) }
 func fail(msg string) {
 	fmt.Fprintln(os.Stderr, "\nERROR: "+msg)
+	waitForEnter()
 	os.Exit(1)
+}
+
+// After the UAC relaunch this runs in its own console window, which closes
+// the moment the process exits -- without this, neither the final
+// instructions nor an error message would stay on screen long enough to read.
+func waitForEnter() {
+	fmt.Print("\nPress Enter to close this window...")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 // --- elevation ---
@@ -129,12 +170,26 @@ func ensureElevated() {
 		fail("Could not determine my own path to relaunch elevated: " + err.Error())
 	}
 	step("Requesting administrator privileges")
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("Start-Process -FilePath '%s' -Verb RunAs", exe))
-	if err := cmd.Run(); err != nil {
+	// Forward our own flags (e.g. -rootfs-url) to the elevated copy -- the
+	// relaunch is a fresh process that would otherwise silently lose them.
+	script := "Start-Process -FilePath " + psQuote(exe) + " -Verb RunAs"
+	if args := os.Args[1:]; len(args) > 0 {
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = psQuote(a)
+		}
+		script += " -ArgumentList " + strings.Join(quoted, ",")
+	}
+	if _, err := powershell(script); err != nil {
 		fail("Could not relaunch elevated (UAC prompt declined?): " + err.Error())
 	}
 	os.Exit(0)
+}
+
+// psQuote wraps s in a PowerShell single-quoted string literal, where the
+// only character needing escaping is the single quote itself (doubled).
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // --- powershell / wsl helpers ---
@@ -144,9 +199,27 @@ func powershell(script string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// wsl.exe's own messages are UTF-16LE by default; WSL_UTF8=1 makes them
+// plain UTF-8 so the output parsing below (and the console) can read them.
+func wslCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("wsl.exe", args...)
+	cmd.Env = append(os.Environ(), "WSL_UTF8=1")
+	return cmd
+}
+
 func wsl(args ...string) (string, error) {
-	out, err := exec.Command("wsl.exe", args...).CombinedOutput()
+	out, err := wslCommand(args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// wslStream is wsl() for the long-running stages (WSL install, apt, git
+// clone, install.sh): passes output straight through to the console so
+// there's visible progress instead of minutes of silence.
+func wslStream(args ...string) error {
+	cmd := wslCommand(args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // --- stage 1: virtualization ---
@@ -168,8 +241,7 @@ func installWSL() error {
 	// and VirtualMachinePlatform features and installs the WSL2 kernel.
 	// --no-distribution: we import our own rootfs in the next stage instead
 	// of the curated Microsoft Store default.
-	_, err := wsl("--install", "--no-distribution")
-	return err
+	return wslStream("--install", "--no-distribution")
 }
 
 // ensureMirroredNetworking turns on WSL2's mirrored networking mode (the
@@ -184,9 +256,9 @@ func ensureMirroredNetworking() error {
 	if userProfile == "" {
 		return fmt.Errorf("%%USERPROFILE%% is not set")
 	}
-	path := filepath.Join(userProfile, ".wslconfig")
+	cfgPath := filepath.Join(userProfile, ".wslconfig")
 
-	existing, err := os.ReadFile(path)
+	existing, err := os.ReadFile(cfgPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -195,7 +267,7 @@ func ensureMirroredNetworking() error {
 	if !changed {
 		return nil
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o644); err != nil {
 		return err
 	}
 
@@ -215,7 +287,9 @@ func ensureMirroredNetworking() error {
 func withMirroredNetworking(content string) (string, bool) {
 	var lines []string
 	if content != "" {
-		lines = strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+		// Drop the empty element a trailing newline leaves behind, or every
+		// rewrite below would append one more blank line to the file.
+		lines = strings.Split(strings.TrimSuffix(strings.ReplaceAll(content, "\r\n", "\n"), "\n"), "\n")
 	}
 
 	sectionStart, sectionEnd, settingLine := -1, -1, -1
@@ -265,8 +339,9 @@ func distroExists() bool {
 		return false
 	}
 	for _, line := range strings.Split(out, "\n") {
-		// wsl -l -q prints UTF-16-ish output that can carry a stray \r and
-		// null bytes on some builds -- strip both before comparing.
+		// Belt and braces alongside WSL_UTF8=1: older wsl.exe builds ignore
+		// it and still print UTF-16-ish output with a stray \r and null
+		// bytes -- strip both before comparing.
 		clean := strings.ReplaceAll(strings.TrimSpace(line), "\x00", "")
 		if clean == distroName {
 			return true
@@ -285,60 +360,172 @@ func importUbuntu() error {
 		return err
 	}
 
-	rootfsPath := filepath.Join(os.TempDir(), "ubuntu-26.04-wsl.rootfs.tar.gz")
-	fmt.Println("    Downloading " + ubuntuRootfsURL)
-	if err := downloadFile(ubuntuRootfsURL, rootfsPath); err != nil {
+	expected := strings.ToLower(strings.TrimSpace(*rootfsSHA256))
+	if expected == "" {
+		sumsURL, fileName := sha256SumsURL(*rootfsURL)
+		fmt.Println("    Fetching checksum from " + sumsURL)
+		sums, err := fetchString(sumsURL)
+		if err != nil {
+			return fmt.Errorf("fetching SHA256SUMS (pass -rootfs-sha256 for a mirror without one): %w", err)
+		}
+		var found bool
+		if expected, found = parseSHA256Sums(sums, fileName); !found {
+			return fmt.Errorf("%s is not listed in %s", fileName, sumsURL)
+		}
+	}
+
+	rootfsPath := filepath.Join(os.TempDir(), "claudecode-sandbox-"+path.Base(*rootfsURL))
+	fmt.Println("    Downloading " + *rootfsURL)
+	actual, err := downloadFile(*rootfsURL, rootfsPath)
+	defer os.Remove(rootfsPath)
+	if err != nil {
 		return fmt.Errorf("downloading rootfs: %w", err)
 	}
-	defer os.Remove(rootfsPath)
+	if actual != expected {
+		return fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s -- refusing to import", *rootfsURL, expected, actual)
+	}
+	ok("SHA256 verified")
 
-	_, err := wsl("--import", distroName, installDir, rootfsPath, "--version", "2")
-	return err
+	return wslStream("--import", distroName, installDir, rootfsPath, "--version", "2")
 }
 
-func downloadFile(url, dest string) error {
+// sha256SumsURL returns the SHA256SUMS URL sitting next to the given file
+// URL (Canonical publishes one per release directory) and the file name to
+// look up in it.
+func sha256SumsURL(fileURL string) (sumsURL, fileName string) {
+	i := strings.LastIndex(fileURL, "/")
+	return fileURL[:i+1] + "SHA256SUMS", fileURL[i+1:]
+}
+
+// parseSHA256Sums finds fileName in sha256sum-format output ("<hex>  name"
+// or "<hex> *name" for binary mode) and returns its lowercase hash.
+func parseSHA256Sums(sums, fileName string) (string, bool) {
+	for _, line := range strings.Split(strings.ReplaceAll(sums, "\r\n", "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		if strings.TrimPrefix(fields[1], "*") == fileName && len(fields[0]) == 64 {
+			return strings.ToLower(fields[0]), true
+		}
+	}
+	return "", false
+}
+
+func fetchString(url string) (string, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %s fetching %s", resp.Status, url)
+		return "", fmt.Errorf("unexpected status %s fetching %s", resp.Status, url)
+	}
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
+}
+
+// downloadFile saves url to dest and returns the hex SHA256 of what it wrote.
+func downloadFile(url, dest string) (string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %s fetching %s", resp.Status, url)
 	}
 
 	out, err := os.Create(dest)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(out, hash), resp.Body); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// --- stage 4: systemd ---
+// --- stage 4: non-root user ---
 
-// Imported rootfs tarballs default to a root user, so no sudo is needed for
-// anything run inside the distro throughout this program.
-func ensureSystemd() error {
-	const wslConf = `[boot]
-systemd=true
-`
-	script := fmt.Sprintf("printf '%s' > /etc/wsl.conf", wslConf)
-	if _, err := wsl("-d", distroName, "--", "bash", "-c", script); err != nil {
-		return err
+var invalidUsernameChars = regexp.MustCompile(`[^a-z0-9_-]`)
+
+// linuxUsername derives a valid Linux account name from the Windows
+// %USERNAME% (lowercased, anything outside [a-z0-9_-] dropped, must start
+// with a letter or underscore, max 32 chars), falling back to a fixed name
+// when nothing usable is left.
+func linuxUsername(windowsName string) string {
+	name := invalidUsernameChars.ReplaceAllString(strings.ToLower(windowsName), "")
+	name = strings.TrimLeft(name, "0123456789-")
+	if len(name) > 32 {
+		name = name[:32]
 	}
-	// Restart the distro so systemd actually takes effect -- only this one
-	// distro, not --shutdown, which would also kill any other WSL distros
-	// the user already has running.
+	if name == "" || name == "root" {
+		return fallbackUsername
+	}
+	return name
+}
+
+// ensureUser makes sure UID 1000 exists inside the distro and returns its
+// name. Imported rootfs tarballs default to root, which would leave
+// install.sh, cc-container, and every workspace owned by root -- the
+// claude-code container (UID 1000) couldn't write to its own /workspace.
+// If some image already ships a UID 1000 account (e.g. "ubuntu"), that one
+// is reused rather than fighting over the UID.
+func ensureUser(wanted string) (string, error) {
+	script := fmt.Sprintf(`set -e
+existing=$(getent passwd %[1]d | cut -d: -f1)
+if [ -n "$existing" ]; then
+  echo "$existing"
+  exit 0
+fi
+if id -u %[2]s >/dev/null 2>&1; then
+  echo "user %[2]s already exists with a UID other than %[1]d" >&2
+  exit 1
+fi
+useradd --create-home --uid %[1]d --shell /bin/bash %[2]s
+echo %[2]s
+`, linuxUID, wanted)
+	out, err := wsl("-d", distroName, "-u", "root", "--", "bash", "-c", script)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, out)
+	}
+	lines := strings.Split(out, "\n")
+	return strings.TrimSpace(lines[len(lines)-1]), nil
+}
+
+// --- stage 5: /etc/wsl.conf (systemd + default user) ---
+
+func wslConf(user string) string {
+	return fmt.Sprintf("[boot]\nsystemd=true\n\n[user]\ndefault=%s\n", user)
+}
+
+// ensureWSLConf enables systemd (needed for dockerd to run as a normal
+// service) and makes user the default login. Only restarts the distro when
+// the file actually changed -- and then only this one distro, not
+// --shutdown, which would also kill any other WSL distros the user already
+// has running.
+func ensureWSLConf(user string) error {
+	want := wslConf(user)
+	current, _ := wsl("-d", distroName, "-u", "root", "--", "cat", "/etc/wsl.conf")
+	if strings.TrimSpace(current) == strings.TrimSpace(want) {
+		return nil
+	}
+	script := fmt.Sprintf("printf '%s' > /etc/wsl.conf", want)
+	if out, err := wsl("-d", distroName, "-u", "root", "--", "bash", "-c", script); err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
 	_, err := wsl("--terminate", distroName)
 	return err
 }
 
-// --- stage 5: Docker ---
+// --- stage 6: Docker ---
 
 func dockerInstalled() bool {
-	_, err := wsl("-d", distroName, "--", "bash", "-c", "command -v docker")
+	_, err := wsl("-d", distroName, "-u", "root", "--", "bash", "-c", "command -v docker")
 	return err == nil
 }
 
@@ -357,21 +544,34 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
 `
-	_, err := wsl("-d", distroName, "--", "bash", "-c", script)
-	return err
+	return wslStream("-d", distroName, "-u", "root", "--", "bash", "-c", script)
 }
 
-// --- stage 6: clone + install.sh ---
+// ensureDockerGroup is idempotent (usermod -aG on an existing member is a
+// no-op) and runs every time rather than only right after installDocker, so
+// a run interrupted between the two stages still ends up correct.
+func ensureDockerGroup(user string) error {
+	out, err := wsl("-d", distroName, "-u", "root", "--", "usermod", "-aG", "docker", user)
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
+}
 
-func cloneAndInstall() error {
+// --- stage 7: clone + install.sh ---
+
+// Runs as the non-root user, not root: install.sh links cc-container into
+// that user's ~/.local/bin and PATH, and the clone ends up owned by them.
+func cloneAndInstall(user string) error {
 	script := fmt.Sprintf(`set -e
-if [ -d ~/%s/.git ]; then
-  cd ~/%s && git pull
+cd ~
+if [ -d %[1]s/.git ]; then
+  cd %[1]s && git pull
 else
-  git clone %s ~/%s
+  git clone %[2]s %[1]s
+  cd %[1]s
 fi
-cd ~/%s && bash install.sh
-`, repoDir, repoDir, repoURL, repoDir, repoDir)
-	_, err := wsl("-d", distroName, "--", "bash", "-c", script)
-	return err
+bash install.sh
+`, repoDir, repoURL)
+	return wslStream("-d", distroName, "-u", user, "--", "bash", "-c", script)
 }

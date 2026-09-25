@@ -183,9 +183,9 @@ stock Windows machine with nothing Docker-related installed yet,
 `windows/claudecode-sandbox-setup.exe` (built from `windows/main.go`, see
 [docs/windows-onboarding.md](docs/windows-onboarding.md)) automates getting
 there instead: checks BIOS virtualization, enables WSL2 with mirrored
-networking, imports a vanilla Ubuntu 26.04, installs Docker Engine from
-Docker's own apt repo, then clones this repo and runs `install.sh` inside
-it — one double-click (with a UAC prompt), safely re-run if a first-time
+networking, imports a vanilla Ubuntu 26.04 (SHA256-verified), creates a
+non-root UID-1000 user, installs Docker Engine from Docker's own apt repo,
+then clones this repo and runs `install.sh` inside it as that user — one double-click (with a UAC prompt), safely re-run if a first-time
 WSL2 install needs a reboot in between. See that doc for exactly what it
 does, how to build it, and its current limitations (not yet verified on
 real Windows hardware).

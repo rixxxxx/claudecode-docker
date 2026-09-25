@@ -48,3 +48,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Windows onboarding installer build output (windows/build.sh)
+windows/claudecode-sandbox-setup.exe
+
+# Local Ubuntu WSL image + SHA256SUMS(.gpg) for windows/ -rootfs-file testing (~400 MB)
+wsl-image/
