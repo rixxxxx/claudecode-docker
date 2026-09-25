@@ -145,11 +145,62 @@ against Canonical's real, unmodified 26.04 `SHA256SUMS`/`SHA256SUMS.gpg`
 rejection; `tests/unit/test_windows_installer.sh` wraps the same
 plus a Windows cross-compile, and soft-skips without Go.
 
+## Open items
+
+Tracked here so they don't get lost between sessions; tick off with a date.
+The hardware test itself has its own checklist further down.
+
+### 1. Build and tests (blocked in the sandbox: no Go, `go.dev`/`proxy.golang.org` not allowlisted)
+
+- [ ] On a host with Go: `cd windows && gofmt -l . && go vet ./... && go
+      test ./... && ./build.sh` (or `./tests/run-tests.sh`, whose
+      `test_windows_installer.sh` stops skipping once `go` is on `PATH`).
+      **The Go code has never been compiled** — only hand-reviewed; the
+      OpenPGP logic was cross-checked in Python against the real files in
+      `windows/testdata/` (2026-09-25).
+- [ ] Fix whatever that turns up, then the "not yet compiled" note in
+      "Known limitations" can go.
+
+### 2. Hardware test
+
+- [ ] Work through the [Hardware test checklist](#hardware-test-checklist).
+      The default image URL in particular hasn't been reachable from the
+      sandbox — only its file name is confirmed via the signed `SHA256SUMS`.
+
+### 3. Design question: administrator rights
+
+- [ ] **Check for admin rights first.** Today `ensureElevated()` triggers
+      the UAC relaunch immediately; on a non-admin account UAC then asks for
+      an administrator's credentials, or fails without a clear explanation.
+      Proposal: before that, check whether the account is in the
+      Administrators group (SID `S-1-5-32-544` in `whoami /groups`, visible
+      even with a UAC-filtered token) and, if not, print a clear warning
+      that installing WSL needs admin rights and an administrator will have
+      to confirm the UAC prompt.
+- [ ] Clarify which stages actually need admin: certainly `wsl --install`;
+      `wsl --import` and everything inside the distro possibly not. Allow
+      continuing without elevation when WSL is already installed?
+
+### 4. Docs after the hardware test
+
+- [ ] Record dated results in this doc.
+- [ ] Drop the "not yet verified" status at the top of this doc and in
+      README.md's Windows paragraph under "Setup".
+
+### 5. Possible improvements (see "Known limitations" for the details)
+
+- [ ] Pick the image name dynamically from the signed `SHA256SUMS` (highest
+      `*-wsl-amd64.wsl`) instead of hardcoding a point release.
+- [ ] Replace the global `wsl --shutdown` after a `.wslconfig` change with
+      something that doesn't also stop the user's other distros.
+- [ ] An uninstall/rollback path.
+
 ## Known limitations
 
-- **Not yet run on real Windows hardware.** Written and reviewed against the
-  documented behavior of `wsl.exe`, `Get-CimInstance`, and `.wslconfig`, and
-  the source cross-compiles, but an actual double-click run — including the
+- **Not yet run on real Windows hardware — and not yet compiled.** Written
+  and reviewed against the documented behavior of `wsl.exe`,
+  `Get-CimInstance`, and `.wslconfig`, but never built (see "Open items"),
+  and an actual double-click run — including the
   BIOS-disabled path and the reboot-and-resume path — still needs to happen
   on a real machine before this is trustworthy for anyone else.
 - **The default image URL names a point release**
@@ -161,6 +212,14 @@ plus a Windows cross-compile, and soft-skips without Go.
 - **Only one pinned signing key.** If Canonical ever rotates the CD Image
   key, the signature check fails closed until `windows/keys/` and
   `trustedFingerprints` in `windows/openpgp.go` are updated.
+- **The OpenPGP check only supports RSA** (v4 keys, binary document
+  signatures, SHA-256/384/512) — enough for Canonical's key, not for e.g.
+  GnuPG's own EdDSA release signatures, should those ever be needed.
+- **`.wslconfig` changes trigger a global `wsl --shutdown`**, which also
+  stops any other distro the user has running at that moment.
+- **Small TOCTOU window for a local image**: the file is hashed, then
+  passed to `wsl --import` by path. Low risk, since it's the user's own
+  local file, but the import doesn't re-check it.
 - **First-run friction is real**, not hidden: enabling WSL2 for the first
   time commonly needs one reboot. The tool is designed to be safely re-run
   rather than pretending this away, but it is still a two-step experience
