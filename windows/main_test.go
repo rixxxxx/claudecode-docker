@@ -7,31 +7,36 @@ import (
 	"testing"
 )
 
+// m is the marker line withMirroredNetworking writes, given the previous value.
+func m(prev string) string { return wslconfigMarker + prev + "\n" }
+
+const mirrored = "networkingMode=mirrored\n"
+
 func TestWithMirroredNetworking(t *testing.T) {
 	cases := []struct {
 		name, in, want string
 		changed        bool
 	}{
-		{"empty", "", "[wsl2]\nnetworkingMode=mirrored\n", true},
+		{"empty", "", "[wsl2]\n" + m("(unset)") + mirrored, true},
 		{
 			"other section only, no trailing newline",
 			"[experimental]\nautoMemoryReclaim=gradual",
-			"[experimental]\nautoMemoryReclaim=gradual\n[wsl2]\nnetworkingMode=mirrored\n", true,
+			"[experimental]\nautoMemoryReclaim=gradual\n[wsl2]\n" + m("(unset)") + mirrored, true,
 		},
-		{"already set", "[wsl2]\nnetworkingMode=mirrored\n", "[wsl2]\nnetworkingMode=mirrored\n", false},
+		{"already set", "[wsl2]\n" + mirrored, "[wsl2]\n" + mirrored, false},
 		{"already set, different case", "[WSL2]\nNetworkingMode=Mirrored\n", "[WSL2]\nNetworkingMode=Mirrored\n", false},
-		{"nat replaced", "[wsl2]\nmemory=8GB\nnetworkingMode=nat\n", "[wsl2]\nmemory=8GB\nnetworkingMode=mirrored\n", true},
+		{"nat replaced", "[wsl2]\nmemory=8GB\nnetworkingMode=nat\n", "[wsl2]\nmemory=8GB\n" + m("networkingMode=nat") + mirrored, true},
 		{
 			"section exists, setting missing, keeps other keys",
 			"[wsl2]\nmemory=8GB\n",
-			"[wsl2]\nnetworkingMode=mirrored\nmemory=8GB\n", true,
+			"[wsl2]\n" + m("(unset)") + mirrored + "memory=8GB\n", true,
 		},
 		{
 			"wsl2 not last, setting under a later section is ignored",
 			"[wsl2]\nmemory=8GB\n[experimental]\nnetworkingMode=nat\n",
-			"[wsl2]\nnetworkingMode=mirrored\nmemory=8GB\n[experimental]\nnetworkingMode=nat\n", true,
+			"[wsl2]\n" + m("(unset)") + mirrored + "memory=8GB\n[experimental]\nnetworkingMode=nat\n", true,
 		},
-		{"CRLF", "[wsl2]\r\nmemory=8GB\r\n", "[wsl2]\nnetworkingMode=mirrored\nmemory=8GB\n", true},
+		{"CRLF", "[wsl2]\r\nmemory=8GB\r\n", "[wsl2]\n" + m("(unset)") + mirrored + "memory=8GB\n", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -40,6 +45,61 @@ func TestWithMirroredNetworking(t *testing.T) {
 				t.Errorf("withMirroredNetworking(%q) = (%q, %v), want (%q, %v)", c.in, got, changed, c.want, c.changed)
 			}
 		})
+	}
+}
+
+func TestWithoutMirroredNetworking(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+		changed        bool
+	}{
+		{"restores previous value", "[wsl2]\nmemory=8GB\n" + m("networkingMode=nat") + mirrored, "[wsl2]\nmemory=8GB\nnetworkingMode=nat\n", true},
+		{"removes setting that was unset", "[wsl2]\n" + m("(unset)") + mirrored + "memory=8GB\n", "[wsl2]\nmemory=8GB\n", true},
+		{"user's own setting is left alone", "[wsl2]\n" + mirrored, "[wsl2]\n" + mirrored, false},
+		{"no .wslconfig content", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, changed := withoutMirroredNetworking(c.in)
+			if got != c.want || changed != c.changed {
+				t.Errorf("withoutMirroredNetworking(%q) = (%q, %v), want (%q, %v)", c.in, got, changed, c.want, c.changed)
+			}
+		})
+	}
+
+	// Round trip: install then uninstall leaves the user's other settings as
+	// they were.
+	orig := "[experimental]\nautoMemoryReclaim=gradual\n[wsl2]\nmemory=8GB\nnetworkingMode=nat\n"
+	added, _ := withMirroredNetworking(orig)
+	if reverted, _ := withoutMirroredNetworking(added); reverted != orig {
+		t.Errorf("round trip: got %q, want %q", reverted, orig)
+	}
+}
+
+func TestParseDistroList(t *testing.T) {
+	// UTF-16LE as printed by older wsl.exe builds that ignore WSL_UTF8=1.
+	utf16ish := "U\x00b\x00u\x00n\x00t\x00u\x00\r\x00\n\x00C\x00l\x00a\x00u\x00d\x00e\x00C\x00o\x00d\x00e\x00S\x00a\x00n\x00d\x00b\x00o\x00x\x00\r\x00\n\x00"
+	got := parseDistroList(utf16ish)
+	if strings.Join(got, ",") != "Ubuntu,"+distroName {
+		t.Errorf("got %q", got)
+	}
+	if got := parseDistroList(""); len(got) != 0 {
+		t.Errorf("empty output: got %q", got)
+	}
+}
+
+func TestLatestWSLImage(t *testing.T) {
+	h := strings.Repeat("a", 64)
+	sums := h + " *ubuntu-26.04-wsl-amd64.wsl\n" +
+		h + " *ubuntu-26.04.2-wsl-amd64.wsl\n" +
+		h + " *ubuntu-26.04.10-wsl-amd64.wsl\n" + // numeric, not lexical, order
+		h + " *ubuntu-26.04.11-wsl-arm64.wsl\n" + // wrong arch
+		h + " *ubuntu-26.04.12-desktop-amd64.iso\n"
+	if got, ok := latestWSLImage(sums); !ok || got != "ubuntu-26.04.10-wsl-amd64.wsl" {
+		t.Errorf("got (%q, %v)", got, ok)
+	}
+	if _, ok := latestWSLImage(h + " *ubuntu-26.04-desktop-amd64.iso\n"); ok {
+		t.Error("found a WSL image where there is none")
 	}
 }
 
@@ -63,10 +123,10 @@ func TestLinuxUsername(t *testing.T) {
 	}
 }
 
-func TestSHA256SumsURL(t *testing.T) {
-	sums, name := sha256SumsURL("https://example.org/releases/26.04/ubuntu-wsl.tar.gz")
-	if sums != "https://example.org/releases/26.04/SHA256SUMS" || name != "ubuntu-wsl.tar.gz" {
-		t.Errorf("got (%q, %q)", sums, name)
+func TestSplitURL(t *testing.T) {
+	dir, name := splitURL("https://example.org/releases/26.04/ubuntu-wsl.tar.gz")
+	if dir != "https://example.org/releases/26.04/" || name != "ubuntu-wsl.tar.gz" {
+		t.Errorf("got (%q, %q)", dir, name)
 	}
 }
 

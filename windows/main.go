@@ -3,8 +3,10 @@
 // installs Docker Engine from Docker's own apt repo (not Ubuntu's outdated
 // docker.io package), then clones this repo and runs its own install.sh
 // inside WSL as that user. See docs/windows-onboarding.md for the
-// user-facing explanation and the known limitations (first-run reboot, the
-// rootfs URL below needing confirmation).
+// user-facing explanation and the known limitations.
+//
+// Runs unelevated: only `wsl --install` needs administrator rights, and that
+// one step alone is relaunched elevated via UAC (see installWSLElevated).
 //
 // Every stage below checks whether it's already done before acting, so
 // re-running this same .exe (e.g. after the reboot WSL2 enablement usually
@@ -21,9 +23,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -38,10 +40,10 @@ const (
 	linuxUID         = 1000
 	fallbackUsername = "claude"
 
-	// Confirmed 2026-09-25 against Canonical's signed SHA256SUMS for 26.04.
-	// Names the point release, so it goes stale with the next one (26.04.2)
-	// -- overridable via -rootfs-url for exactly this reason.
-	defaultRootfsURL = "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-wsl-amd64.wsl"
+	// Release directory the image is downloaded from. The image name itself
+	// is picked from the signed SHA256SUMS there (latest point release, see
+	// latestWSLImage), so this doesn't go stale with 26.04.2.
+	defaultReleaseDir = "https://releases.ubuntu.com/26.04/"
 
 	// Folder next to the .exe that, if present, supplies the image and its
 	// SHA256SUMS/SHA256SUMS.gpg locally instead of downloading them.
@@ -49,15 +51,41 @@ const (
 )
 
 var (
-	rootfsURL = flag.String("rootfs-url", defaultRootfsURL,
-		"Ubuntu WSL image to download when no local image folder exists; SHA256SUMS(.gpg) are fetched from the same directory")
+	rootfsURL = flag.String("rootfs-url", "",
+		"exact Ubuntu WSL image to download instead of the latest one in "+defaultReleaseDir+"; SHA256SUMS(.gpg) are fetched from the same directory")
 	imageDir = flag.String("image-dir", "",
 		"folder with a local .wsl image plus SHA256SUMS and SHA256SUMS.gpg (default: "+localImageDirName+" next to this .exe, if it exists)")
+	uninstall = flag.Bool("uninstall", false,
+		"remove the "+distroName+" distro (and everything inside it) and revert this tool's .wslconfig change")
+	// Internal: set on the elevated copy installWSLElevated launches.
+	installWSLOnly = flag.Bool("install-wsl-only", false, "internal: run only the elevated WSL2 installation")
 )
 
 func main() {
 	flag.Parse()
-	ensureElevated()
+
+	if *installWSLOnly {
+		step("Installing WSL2 (elevated)")
+		if err := installWSL(); err != nil {
+			fail("Failed to install WSL2: " + err.Error())
+		}
+		ok("WSL2 installation finished -- the setup continues in the original window")
+		return
+	}
+	if *uninstall {
+		runUninstall()
+		return
+	}
+
+	step("Checking administrator rights")
+	admin := isAdminAccount()
+	if admin {
+		ok("This account is an administrator -- elevation (UAC) is only requested if WSL2 still needs installing")
+	} else {
+		warn("This account is not an administrator. Installing WSL2 needs admin rights,\n" +
+			"    so that step may not be possible from this account. Continuing without\n" +
+			"    elevation -- the stages after the WSL2 installation don't need admin rights.")
+	}
 
 	step("Checking virtualization firmware")
 	if !virtualizationEnabled() {
@@ -72,7 +100,15 @@ func main() {
 
 	step("Checking WSL2")
 	if !wslReady() {
-		if err := installWSL(); err != nil {
+		if !admin {
+			fail(
+				"WSL2 is not installed, and installing it needs administrator rights\n" +
+					"this account doesn't have. Ask an administrator to run this program once\n" +
+					"(or `wsl --install --no-distribution`), reboot, then run it again from\n" +
+					"this account -- it will pick up right where it left off.",
+			)
+		}
+		if err := installWSLElevated(); err != nil {
 			fail("Failed to install WSL2: " + err.Error())
 		}
 		if !wslReady() {
@@ -141,15 +177,17 @@ func main() {
 
 func step(msg string) { fmt.Println("==> " + msg + "...") }
 func ok(msg string)   { fmt.Println("    " + msg) }
+func warn(msg string) { fmt.Println("    WARNING: " + msg) }
 func fail(msg string) {
 	fmt.Fprintln(os.Stderr, "\nERROR: "+msg)
 	waitForEnter()
 	os.Exit(1)
 }
 
-// After the UAC relaunch this runs in its own console window, which closes
-// the moment the process exits -- without this, neither the final
-// instructions nor an error message would stay on screen long enough to read.
+// A double-clicked .exe (and the elevated WSL-install copy) runs in its own
+// console window, which closes the moment the process exits -- without this,
+// neither the final instructions nor an error message would stay on screen
+// long enough to read.
 func waitForEnter() {
 	fmt.Print("\nPress Enter to close this window...")
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
@@ -164,29 +202,35 @@ func isElevated() bool {
 	return exec.Command("net", "session").Run() == nil
 }
 
-func ensureElevated() {
+// isAdminAccount reports whether the current account is in the local
+// Administrators group (well-known SID S-1-5-32-544). whoami /groups lists it
+// even under UAC's filtered token (as "Group used for deny only"), so this is
+// true for an administrator who just isn't elevated right now -- unlike
+// isElevated.
+func isAdminAccount() bool {
+	out, err := exec.Command("whoami", "/groups").Output()
+	return err == nil && strings.Contains(string(out), "S-1-5-32-544")
+}
+
+// installWSLElevated runs only the WSL2 installation elevated: a copy of
+// this .exe with -install-wsl-only, via UAC, in its own window, waiting for
+// it to finish. Everything else stays in this unelevated process -- in
+// particular the distro import, which WSL registers per user.
+func installWSLElevated() error {
 	if isElevated() {
-		return
+		return installWSL()
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fail("Could not determine my own path to relaunch elevated: " + err.Error())
+		return fmt.Errorf("could not determine my own path to relaunch elevated: %w", err)
 	}
-	step("Requesting administrator privileges")
-	// Forward our own flags (e.g. -rootfs-url) to the elevated copy -- the
-	// relaunch is a fresh process that would otherwise silently lose them.
-	script := "Start-Process -FilePath " + psQuote(exe) + " -Verb RunAs"
-	if args := os.Args[1:]; len(args) > 0 {
-		quoted := make([]string, len(args))
-		for i, a := range args {
-			quoted[i] = psQuote(a)
-		}
-		script += " -ArgumentList " + strings.Join(quoted, ",")
+	fmt.Println("    Requesting administrator privileges (UAC) for the WSL2 installation only")
+	script := "$p = Start-Process -FilePath " + psQuote(exe) +
+		" -ArgumentList '-install-wsl-only' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+	if out, err := powershell(script); err != nil {
+		return fmt.Errorf("elevated WSL2 installation failed or the UAC prompt was declined: %w %s", err, out)
 	}
-	if _, err := powershell(script); err != nil {
-		fail("Could not relaunch elevated (UAC prompt declined?): " + err.Error())
-	}
-	os.Exit(0)
+	return nil
 }
 
 // psQuote wraps s in a PowerShell single-quoted string literal, where the
@@ -274,11 +318,46 @@ func ensureMirroredNetworking() error {
 		return err
 	}
 
-	// A .wslconfig change only takes effect once every running WSL2 instance
-	// has been torn down -- harmless this early, since no distro has been
-	// imported or started yet at this point in the flow.
-	_, err = wsl("--shutdown")
+	return restartWSLForConfig()
+}
+
+// restartWSLForConfig applies a .wslconfig change, which only takes effect
+// once the whole WSL2 VM restarts. wsl --shutdown does that, but also stops
+// every other running distro -- so only do it when nothing is running, and
+// otherwise leave the restart to the user (NAT networking keeps working
+// until then).
+func restartWSLForConfig() error {
+	if running := runningDistros(); len(running) > 0 {
+		warn("The .wslconfig change takes effect after the next full WSL restart.\n" +
+			"    Not stopping the running distro(s) " + strings.Join(running, ", ") + " for it --\n" +
+			"    run `wsl --shutdown` yourself when convenient.")
+		return nil
+	}
+	_, err := wsl("--shutdown")
 	return err
+}
+
+// runningDistros lists running WSL distros; an error (wsl.exe exits non-zero
+// when there are none) counts as none.
+func runningDistros() []string {
+	out, err := wsl("-l", "--running", "-q")
+	if err != nil {
+		return nil
+	}
+	return parseDistroList(out)
+}
+
+// parseDistroList turns `wsl -l -q` output into distro names. Belt and
+// braces alongside WSL_UTF8=1: older wsl.exe builds ignore it and still
+// print UTF-16-ish output with a stray \r and null bytes -- strip both.
+func parseDistroList(out string) []string {
+	var names []string
+	for _, line := range strings.Split(strings.ReplaceAll(out, "\x00", ""), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // withMirroredNetworking ensures a [wsl2] section with
@@ -286,14 +365,13 @@ func ensureMirroredNetworking() error {
 // disturbing any other settings a user may already have in there (memory
 // limits, .wslconfig for a different purpose, etc.). Returns the updated
 // content and whether anything actually changed, so the caller can skip the
-// wsl --shutdown this requires when it's already set correctly.
+// WSL restart this requires when it's already set correctly.
+//
+// Whatever it changes is preceded by a wslconfigMarker comment recording the
+// previous value, so -uninstall (withoutMirroredNetworking) can undo exactly
+// this tool's change and nothing the user set themselves.
 func withMirroredNetworking(content string) (string, bool) {
-	var lines []string
-	if content != "" {
-		// Drop the empty element a trailing newline leaves behind, or every
-		// rewrite below would append one more blank line to the file.
-		lines = strings.Split(strings.TrimSuffix(strings.ReplaceAll(content, "\r\n", "\n"), "\n"), "\n")
-	}
+	lines := splitLines(content)
 
 	sectionStart, sectionEnd, settingLine := -1, -1, -1
 	for i, line := range lines {
@@ -316,14 +394,15 @@ func withMirroredNetworking(content string) (string, bool) {
 		if strings.EqualFold(strings.TrimSpace(lines[settingLine]), setting) {
 			return content, false
 		}
-		lines[settingLine] = setting
-		return strings.Join(lines, "\n") + "\n", true
+		out := append([]string{}, lines[:settingLine]...)
+		out = append(out, wslconfigMarker+strings.TrimSpace(lines[settingLine]), setting)
+		out = append(out, lines[settingLine+1:]...)
+		return strings.Join(out, "\n") + "\n", true
 	}
 
 	if sectionStart != -1 {
-		out := make([]string, 0, len(lines)+1)
-		out = append(out, lines[:sectionStart+1]...)
-		out = append(out, setting)
+		out := append([]string{}, lines[:sectionStart+1]...)
+		out = append(out, wslconfigMarker+wslconfigUnset, setting)
 		out = append(out, lines[sectionStart+1:]...)
 		return strings.Join(out, "\n") + "\n", true
 	}
@@ -331,7 +410,43 @@ func withMirroredNetworking(content string) (string, bool) {
 	if content != "" && !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	return content + "[wsl2]\n" + setting + "\n", true
+	return content + "[wsl2]\n" + wslconfigMarker + wslconfigUnset + "\n" + setting + "\n", true
+}
+
+const (
+	wslconfigMarker = "# added by claudecode-sandbox-setup, previously: "
+	wslconfigUnset  = "(unset)"
+)
+
+// withoutMirroredNetworking undoes withMirroredNetworking: finds its marker
+// comment and restores the recorded previous line (or removes the setting if
+// there was none). Without a marker it changes nothing -- then the setting
+// wasn't this tool's to remove.
+func withoutMirroredNetworking(content string) (string, bool) {
+	lines := splitLines(content)
+	for i := 0; i+1 < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, wslconfigMarker) ||
+			!strings.HasPrefix(strings.ToLower(strings.TrimSpace(lines[i+1])), "networkingmode") {
+			continue
+		}
+		out := append([]string{}, lines[:i]...)
+		if prev := strings.TrimPrefix(trimmed, wslconfigMarker); prev != wslconfigUnset {
+			out = append(out, prev)
+		}
+		out = append(out, lines[i+2:]...)
+		return strings.Join(out, "\n") + "\n", true
+	}
+	return content, false
+}
+
+// splitLines normalizes CRLF and drops the empty element a trailing newline
+// leaves behind, or every rewrite would append one more blank line.
+func splitLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(strings.ReplaceAll(content, "\r\n", "\n"), "\n"), "\n")
 }
 
 // --- stage 3: Ubuntu 26.04 import ---
@@ -341,24 +456,28 @@ func distroExists() bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(out, "\n") {
-		// Belt and braces alongside WSL_UTF8=1: older wsl.exe builds ignore
-		// it and still print UTF-16-ish output with a stray \r and null
-		// bytes -- strip both before comparing.
-		clean := strings.ReplaceAll(strings.TrimSpace(line), "\x00", "")
-		if clean == distroName {
+	for _, name := range parseDistroList(out) {
+		if name == distroName {
 			return true
 		}
 	}
 	return false
 }
 
-func importUbuntu() error {
+// distroInstallDir is where the distro's virtual disk lives.
+func distroInstallDir() (string, error) {
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if localAppData == "" {
-		return fmt.Errorf("%%LOCALAPPDATA%% is not set")
+		return "", fmt.Errorf("%%LOCALAPPDATA%% is not set")
 	}
-	installDir := filepath.Join(localAppData, distroName)
+	return filepath.Join(localAppData, distroName), nil
+}
+
+func importUbuntu() error {
+	installDir, err := distroInstallDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
@@ -404,8 +523,11 @@ func fetchVerifiedImage() (img string, cleanup func(), err error) {
 			return "", cleanup, err
 		}
 	} else {
-		var sumsURL string
-		sumsURL, imgName = sha256SumsURL(*rootfsURL)
+		releaseDir := defaultReleaseDir
+		if *rootfsURL != "" {
+			releaseDir, imgName = splitURL(*rootfsURL)
+		}
+		sumsURL := releaseDir + "SHA256SUMS"
 		fmt.Println("    Fetching " + sumsURL + "(.gpg)")
 		if sums, err = fetchBytes(sumsURL); err != nil {
 			return "", cleanup, err
@@ -421,6 +543,14 @@ func fetchVerifiedImage() (img string, cleanup func(), err error) {
 	}
 	ok("SHA256SUMS signature is valid (" + trustedFingerprints[key.fingerprint] + ", " + key.fingerprint + ")")
 
+	if imgName == "" {
+		var found bool
+		if imgName, found = latestWSLImage(string(sums)); !found {
+			return "", cleanup, fmt.Errorf("no *-wsl-amd64.wsl image listed in the signed SHA256SUMS of %s", defaultReleaseDir)
+		}
+		ok("Latest WSL image in that release: " + imgName)
+	}
+
 	expected, found := parseSHA256Sums(string(sums), imgName)
 	if !found {
 		return "", cleanup, fmt.Errorf("%s is not listed in the signed SHA256SUMS (renamed file, or SHA256SUMS from a different release?)", imgName)
@@ -431,10 +561,14 @@ func fetchVerifiedImage() (img string, cleanup func(), err error) {
 		fmt.Println("    Hashing " + imgName)
 		actual, err = hashFile(img)
 	} else {
-		img = filepath.Join(os.TempDir(), "claudecode-sandbox-"+path.Base(*rootfsURL))
+		imgURL := *rootfsURL
+		if imgURL == "" {
+			imgURL = defaultReleaseDir + imgName
+		}
+		img = filepath.Join(os.TempDir(), "claudecode-sandbox-"+imgName)
 		cleanup = func() { os.Remove(img) }
-		fmt.Println("    Downloading " + *rootfsURL)
-		actual, err = downloadFile(*rootfsURL, img)
+		fmt.Println("    Downloading " + imgURL)
+		actual, err = downloadFile(imgURL, img)
 	}
 	if err != nil {
 		return "", cleanup, err
@@ -498,12 +632,40 @@ func findLocalImage(dir string) (img, sums string, err error) {
 	return filepath.Join(dir, imgs[0]), sums, nil
 }
 
-// sha256SumsURL returns the SHA256SUMS URL sitting next to the given file
-// URL (Canonical publishes one per release directory) and the file name to
-// look up in it.
-func sha256SumsURL(fileURL string) (sumsURL, fileName string) {
+// splitURL splits a file URL into its directory (with trailing slash --
+// Canonical publishes one SHA256SUMS per release directory) and file name.
+func splitURL(fileURL string) (dir, fileName string) {
 	i := strings.LastIndex(fileURL, "/")
-	return fileURL[:i+1] + "SHA256SUMS", fileURL[i+1:]
+	return fileURL[:i+1], fileURL[i+1:]
+}
+
+var wslImageName = regexp.MustCompile(`^ubuntu-\d+\.\d+(?:\.(\d+))?-wsl-amd64\.wsl$`)
+
+// latestWSLImage picks the highest point release's amd64 WSL image from a
+// release directory's SHA256SUMS (e.g. ubuntu-26.04.1-wsl-amd64.wsl over
+// ubuntu-26.04-wsl-amd64.wsl), so the default doesn't need a code change for
+// every point release.
+func latestWSLImage(sums string) (string, bool) {
+	best, bestPoint := "", -1
+	for _, line := range strings.Split(strings.ReplaceAll(sums, "\r\n", "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		m := wslImageName.FindStringSubmatch(name)
+		if m == nil {
+			continue
+		}
+		point := 0
+		if m[1] != "" {
+			point, _ = strconv.Atoi(m[1])
+		}
+		if point > bestPoint {
+			best, bestPoint = name, point
+		}
+	}
+	return best, best != ""
 }
 
 // parseSHA256Sums finds fileName in sha256sum-format output ("<hex>  name"
@@ -695,4 +857,77 @@ fi
 bash install.sh
 `, repoDir, repoURL)
 	return wslStream("-d", distroName, "-u", user, "--", "bash", "-c", script)
+}
+
+// --- -uninstall ---
+
+// runUninstall removes what this tool set up: the distro (with everything
+// inside it, hence the typed confirmation) and its .wslconfig change. WSL2
+// itself stays installed -- other distros may depend on it, and removing it
+// would need admin rights. Needs no elevation itself.
+func runUninstall() {
+	installDir, err := distroInstallDir()
+	if err != nil {
+		fail(err.Error())
+	}
+
+	fmt.Println("==> This removes:")
+	fmt.Println("      - the WSL distro " + distroName + ", including EVERYTHING inside it")
+	fmt.Println("        (cloned repos, workspaces, Docker images) -- this can't be undone")
+	fmt.Println("      - " + installDir)
+	fmt.Println("      - networkingMode=mirrored from .wslconfig, if this tool added it")
+	fmt.Println("    WSL2 itself stays installed.")
+	fmt.Print("\nType YES to continue: ")
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if strings.TrimSpace(answer) != "YES" {
+		fmt.Println("Aborted, nothing was changed.")
+		waitForEnter()
+		return
+	}
+
+	step("Removing the " + distroName + " distro")
+	if distroExists() {
+		if err := wslStream("--unregister", distroName); err != nil {
+			fail("Failed to unregister " + distroName + ": " + err.Error())
+		}
+	}
+	if err := os.RemoveAll(installDir); err != nil {
+		fail("Failed to remove " + installDir + ": " + err.Error())
+	}
+	ok(distroName + " is removed")
+
+	step("Reverting the mirrored networking setting")
+	if err := revertMirroredNetworking(); err != nil {
+		fail("Failed to update .wslconfig: " + err.Error())
+	}
+
+	fmt.Println()
+	fmt.Println("==> Uninstall complete.")
+	waitForEnter()
+}
+
+func revertMirroredNetworking() error {
+	userProfile := os.Getenv("USERPROFILE")
+	if userProfile == "" {
+		return fmt.Errorf("%%USERPROFILE%% is not set")
+	}
+	cfgPath := filepath.Join(userProfile, ".wslconfig")
+	existing, err := os.ReadFile(cfgPath)
+	if os.IsNotExist(err) {
+		ok("No .wslconfig, nothing to revert")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	updated, changed := withoutMirroredNetworking(string(existing))
+	if !changed {
+		ok("No setting added by this tool in .wslconfig, left untouched")
+		return nil
+	}
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o644); err != nil {
+		return err
+	}
+	ok("Reverted .wslconfig")
+	return restartWSLForConfig()
 }

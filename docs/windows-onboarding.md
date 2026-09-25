@@ -39,10 +39,11 @@ this repo's existing, unmodified `install.sh` inside WSL.
 
 ```mermaid
 flowchart TD
-    A["Self-elevate<br/>(UAC)"] --> B["Check virtualization<br/>firmware enabled"]
+    A0["Check admin account<br/>(warn if not)"] --> B["Check virtualization<br/>firmware enabled"]
     B -->|disabled| B1["Print BIOS/UEFI<br/>instructions, exit"]
     B -->|enabled| C["Ensure WSL2 installed"]
-    C -->|"just installed<br/>(needs reboot)"| C1["Ask for reboot,<br/>exit"]
+    C -->|"missing, not admin"| C0["Explain that an admin<br/>must install WSL2, exit"]
+    C -->|"missing, admin:<br/>UAC for this step only"| C1["Install, ask for<br/>reboot, exit"]
     C -->|ready| D["Enable mirrored<br/>networking (.wslconfig)"]
     D --> E["Import vanilla Ubuntu 26.04<br/>(GPG + SHA256 verified)"]
     E --> E2["Create non-root<br/>user (UID 1000)"]
@@ -56,6 +57,18 @@ Every stage checks whether it's already done before acting (see each stage's
 own `*Ready`/`*Exists`/`*Installed` check in `windows/main.go`) — re-running
 the same `.exe`, e.g. after the reboot WSL2 enablement usually needs the
 first time, just continues instead of starting over.
+
+- **Administrator rights**: the tool runs **unelevated**. At the start it
+  checks whether the account is in the local Administrators group (SID
+  `S-1-5-32-544` in `whoami /groups`, listed even under UAC's filtered
+  token). If not, it prints a warning and carries on — every stage after
+  the WSL2 installation should work without admin rights (still to be
+  confirmed on real hardware). Only `wsl --install` needs elevation: for an
+  admin account, just that one step runs as an elevated copy of the `.exe`
+  in its own window via UAC, and the original window waits for it. For a
+  non-admin account with WSL2 not yet installed, the tool stops and
+  explains that an administrator has to run it (or `wsl --install
+  --no-distribution`) once.
 
 - **Virtualization check**: `Get-CimInstance Win32_Processor`'s
   `VirtualizationFirmwareEnabled` property. This can't be turned on from
@@ -91,7 +104,9 @@ first time, just continues instead of starting over.
   like `SHA256SUMS_ubuntu-26.04` is fine), and that file's `.gpg`
   signature (`SHA256SUMS_ubuntu-26.04.gpg`). The image file name must stay
   as Canonical published it, since that's what `SHA256SUMS` lists.
-  Otherwise all three are downloaded from `releases.ubuntu.com`.
+  Otherwise all three are downloaded from `releases.ubuntu.com/26.04/`,
+  picking the latest point release's `*-wsl-amd64.wsl` listed in the
+  signed `SHA256SUMS` — so 26.04.2 is picked up without a code change.
 - **Non-root user**: an imported rootfs logs in as root by default, which
   would leave `install.sh`, `cc-container`, and every workspace owned by
   root — and the `claude-code` container (UID 1000) unable to write to its
@@ -122,10 +137,21 @@ until Enter is pressed, since the UAC relaunch runs in its own window.
 | Flag | Purpose |
 |------|---------|
 | `-image-dir <folder>` | Local image folder (see above) instead of the default `wsl-image` next to the `.exe`. |
-| `-rootfs-url <url>` | Image to download when there's no local folder, instead of the built-in default (see "Known limitations"). `SHA256SUMS` and `SHA256SUMS.gpg` are fetched from the same directory and checked the same way. |
+| `-rootfs-url <url>` | Exact image to download when there's no local folder, instead of the latest one in `releases.ubuntu.com/26.04/`. `SHA256SUMS` and `SHA256SUMS.gpg` are fetched from the same directory and checked the same way. |
+| `-uninstall` | Removes the `ClaudeCodeSandbox` distro — **including everything inside it** (cloned repos, workspaces, Docker images), hence a typed `YES` confirmation — and its folder under `%LOCALAPPDATA%`, and reverts the `.wslconfig` change (see below). Leaves WSL2 itself installed. No admin rights needed. |
 
-Flags are forwarded to the elevated copy after the UAC prompt. Run it from a
-terminal, e.g. `.\claudecode-sandbox-setup.exe -image-dir D:\ubuntu`.
+Run it from a terminal to pass flags, e.g.
+`.\claudecode-sandbox-setup.exe -image-dir D:\ubuntu`.
+
+**`.wslconfig` changes are reversible and don't kill other distros.** The
+tool writes a comment line `# added by claudecode-sandbox-setup,
+previously: …` above its `networkingMode=mirrored`, recording the earlier
+value; `-uninstall` uses it to restore exactly that and leaves a
+`networkingMode` the user set themselves untouched. A `.wslconfig` change
+only takes effect after the whole WSL VM restarts: the tool runs `wsl
+--shutdown` only if no distro is running, and otherwise prints a warning
+asking the user to do it when convenient (WSL keeps using NAT until then,
+which works too).
 
 ## Building
 
@@ -167,19 +193,13 @@ The hardware test itself has its own checklist further down.
       The default image URL in particular hasn't been reachable from the
       sandbox — only its file name is confirmed via the signed `SHA256SUMS`.
 
-### 3. Design question: administrator rights
+### 3. Administrator rights — implemented 2026-09-25, not yet compiled
 
-- [ ] **Check for admin rights first.** Today `ensureElevated()` triggers
-      the UAC relaunch immediately; on a non-admin account UAC then asks for
-      an administrator's credentials, or fails without a clear explanation.
-      Proposal: before that, check whether the account is in the
-      Administrators group (SID `S-1-5-32-544` in `whoami /groups`, visible
-      even with a UAC-filtered token) and, if not, print a clear warning
-      that installing WSL needs admin rights and an administrator will have
-      to confirm the UAC prompt.
-- [ ] Clarify which stages actually need admin: certainly `wsl --install`;
-      `wsl --import` and everything inside the distro possibly not. Allow
-      continuing without elevation when WSL is already installed?
+- [x] Check for admin rights first, warn on a non-admin account (see
+      "Administrator rights" under "What it does").
+- [x] Elevate only for `wsl --install`; everything else runs unelevated.
+- [ ] Confirm on real hardware that everything after the WSL2 installation
+      really works without admin rights (see checklist).
 
 ### 4. Docs after the hardware test
 
@@ -187,13 +207,13 @@ The hardware test itself has its own checklist further down.
 - [ ] Drop the "not yet verified" status at the top of this doc and in
       README.md's Windows paragraph under "Setup".
 
-### 5. Possible improvements (see "Known limitations" for the details)
+### 5. Improvements — implemented 2026-09-25, not yet compiled
 
-- [ ] Pick the image name dynamically from the signed `SHA256SUMS` (highest
-      `*-wsl-amd64.wsl`) instead of hardcoding a point release.
-- [ ] Replace the global `wsl --shutdown` after a `.wslconfig` change with
-      something that doesn't also stop the user's other distros.
-- [ ] An uninstall/rollback path.
+- [x] Pick the image name dynamically from the signed `SHA256SUMS`
+      (`latestWSLImage` in `windows/main.go`).
+- [x] No global `wsl --shutdown` while other distros are running
+      (`restartWSLForConfig`).
+- [x] Uninstall path: `-uninstall` (`runUninstall`).
 
 ## Known limitations
 
@@ -203,20 +223,19 @@ The hardware test itself has its own checklist further down.
   and an actual double-click run — including the
   BIOS-disabled path and the reboot-and-resume path — still needs to happen
   on a real machine before this is trustworthy for anyone else.
-- **The default image URL names a point release**
-  (`defaultRootfsURL` in `windows/main.go`,
-  `releases.ubuntu.com/26.04/ubuntu-26.04.1-wsl-amd64.wsl`, confirmed
-  2026-09-25 against Canonical's signed `SHA256SUMS`). It goes stale once
-  26.04.2 replaces it in that directory; `-rootfs-url` or a local
-  `wsl-image` folder work around that without a rebuild.
+- **The default download is pinned to the 26.04 release directory**
+  (`defaultReleaseDir` in `windows/main.go`). Point releases are picked up
+  automatically; moving to the next LTS needs a code change (or
+  `-rootfs-url`).
 - **Only one pinned signing key.** If Canonical ever rotates the CD Image
   key, the signature check fails closed until `windows/keys/` and
   `trustedFingerprints` in `windows/openpgp.go` are updated.
 - **The OpenPGP check only supports RSA** (v4 keys, binary document
   signatures, SHA-256/384/512) — enough for Canonical's key, not for e.g.
   GnuPG's own EdDSA release signatures, should those ever be needed.
-- **`.wslconfig` changes trigger a global `wsl --shutdown`**, which also
-  stops any other distro the user has running at that moment.
+- **Mirrored networking may not be active right after the first run** if
+  other distros were running at the time — see the `.wslconfig` note under
+  "Flags"; the tool warns about it rather than stopping them.
 - **Small TOCTOU window for a local image**: the file is hashed, then
   passed to `wsl --import` by path. Low risk, since it's the user's own
   local file, but the import doesn't re-check it.
@@ -227,10 +246,9 @@ The hardware test itself has its own checklist further down.
 - **Mirrored networking needs Windows 11 23H2+.** On older Windows, the
   `.wslconfig` setting is silently ignored by WSL (not an error this tool
   can detect) — WSL2 keeps using NAT networking instead.
-- **No uninstall/rollback path yet** — mirrors `uninstall.sh`'s scope on the
-  Linux side, which also only reverses the `cc-container` PATH symlink, not
-  a full teardown. A `wsl --unregister ClaudeCodeSandbox` removes the distro
-  manually in the meantime.
+- **`-uninstall` leaves WSL2 installed** and doesn't touch Docker Desktop or
+  other distros; turning WSL2 off entirely needs admin rights and is up to
+  the user.
 
 ## Hardware test checklist
 
@@ -240,12 +258,19 @@ virtualization), with each result dated back into this doc before the
 
 - [ ] Virtualization **disabled** in firmware: BIOS/UEFI instructions
       appear, window stays open until Enter, nothing else is changed.
+- [ ] **Non-admin account**, WSL2 missing: warning at the start, then a
+      clear "an administrator must install WSL2" stop — no UAC prompt.
+- [ ] **Non-admin account**, WSL2 already installed: warning, then the rest
+      completes without any UAC prompt.
+- [ ] **Admin account**, WSL2 missing: UAC appears only for the WSL2
+      installation (separate window), the original window continues and
+      asks for the reboot.
 - [ ] Fresh machine without WSL: WSL2 installs, the reboot prompt appears;
       after the reboot, running the `.exe` again picks up where it left off.
 - [ ] With a `wsl-image` folder next to the `.exe`: "signature is valid"
       and "SHA256 … matches" appear, nothing is downloaded.
-- [ ] Without it: the default URL downloads and passes both checks
-      (otherwise: record the correct URL here, update `defaultRootfsURL`).
+- [ ] Without it: the latest image in `releases.ubuntu.com/26.04/` is
+      picked, downloads, and passes both checks.
 - [ ] Running it a second time right after success: every stage reports
       done, no redownload, no `wsl --terminate`.
 - [ ] An existing `%USERPROFILE%\.wslconfig` with other keys keeps them.
@@ -259,3 +284,7 @@ virtualization), with each result dated back into this doc before the
 - [ ] Windows 10 or Windows 11 before 23H2: mirrored networking is silently
       ignored, but the flow still completes over NAT.
 - [ ] Windows username with spaces/umlauts: derived Linux username is sane.
+- [ ] With another distro running during the first run: warning about the
+      pending WSL restart, the other distro keeps running.
+- [ ] `-uninstall`: anything but `YES` aborts; `YES` removes the distro and
+      its folder, and `.wslconfig` is back to its previous state.

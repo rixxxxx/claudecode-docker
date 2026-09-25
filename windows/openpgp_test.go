@@ -44,8 +44,12 @@ func TestVerifyCanonicalSignature(t *testing.T) {
 		t.Errorf("verified by unexpected key %s", key.fingerprint)
 	}
 
-	// Signed SHA256SUMS lists the exact image the default URL points to.
-	_, name := sha256SumsURL(defaultRootfsURL)
+	// The default download picks the latest point release's image from the
+	// real signed SHA256SUMS -- 26.04.1, with its published hash.
+	name, found := latestWSLImage(string(sums))
+	if !found || name != "ubuntu-26.04.1-wsl-amd64.wsl" {
+		t.Fatalf("latestWSLImage: got (%q, %v)", name, found)
+	}
 	if got, ok := parseSHA256Sums(string(sums), name); !ok || got != "48d56724b5c8e60f24893e83e73bbb58c60b3ca22fba3da977075420acd54104" {
 		t.Errorf("%s: got (%q, %v)", name, got, ok)
 	}
