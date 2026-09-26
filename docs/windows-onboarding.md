@@ -39,11 +39,11 @@ this repo's existing, unmodified `install.sh` inside WSL.
 
 ```mermaid
 flowchart TD
-    A0["Check admin account<br/>(warn if not)"] --> B["Check virtualization<br/>firmware enabled"]
+    A0["Check admin account<br/>(warn if not)"] --> C["Check WSL2"]
+    C -->|missing| B["Check virtualization<br/>firmware enabled"]
     B -->|disabled| B1["Print BIOS/UEFI<br/>instructions, exit"]
-    B -->|enabled| C["Ensure WSL2 installed"]
-    C -->|"missing, not admin"| C0["Explain that an admin<br/>must install WSL2, exit"]
-    C -->|"missing, admin:<br/>UAC for this step only"| C1["Install, ask for<br/>reboot, exit"]
+    B -->|"enabled, not admin"| C0["Explain that an admin<br/>must install WSL2, exit"]
+    B -->|"enabled, admin:<br/>UAC for this step only"| C1["Install, ask for<br/>reboot, exit"]
     C -->|ready| D["Enable mirrored<br/>networking (.wslconfig)"]
     D --> E["Import vanilla Ubuntu 26.04<br/>(GPG + SHA256 verified)"]
     E --> E2["Create non-root<br/>user (UID 1000)"]
@@ -71,9 +71,18 @@ first time, just continues instead of starting over.
   --no-distribution`) once.
 
 - **Virtualization check**: `Get-CimInstance Win32_Processor`'s
-  `VirtualizationFirmwareEnabled` property. This can't be turned on from
-  Windows — BIOS/UEFI settings are firmware-level by design. If it's off, the
-  tool prints instructions and stops; it does not attempt anything further.
+  `VirtualizationFirmwareEnabled` property, which has to be `True` for
+  every CPU socket (one output line each — multi-socket machines and VMs,
+  e.g. virt-manager's default one-socket-per-vCPU topology, print several).
+  This can't be turned on from Windows — BIOS/UEFI settings are
+  firmware-level by design. If it's off, the tool prints instructions and
+  stops; it does not attempt anything further. Only checked while WSL2 is
+  still missing: once it's installed, Windows itself runs on Hyper-V and
+  reports this property as `False` even though virtualization is on, which
+  would otherwise block the resume after the post-install reboot (fixed
+  2026-09-26, before the first hardware test). If virtualization gets
+  disabled after WSL2 is already installed, the tool no longer catches it
+  up front — `wsl --import` fails with WSL's own error instead.
 - **WSL2**: `wsl --install --no-distribution` (the modern one-shot command;
   enables the required Windows features and installs the WSL2 kernel without
   the curated Microsoft Store default distro, since the next stage imports
@@ -216,6 +225,18 @@ The hardware test itself has its own checklist further down.
       (`restartWSLForConfig`).
 - [x] Uninstall path: `-uninstall` (`runUninstall`).
 
+### 6. Virtualization check fixes — implemented 2026-09-26, not yet compiled
+
+Found while preparing the hardware test, not observed live yet:
+
+- [x] Only run the firmware check while WSL2 is still missing — with WSL2
+      installed, Windows runs on Hyper-V and reports
+      `VirtualizationFirmwareEnabled=False`, which would have stopped the
+      resume after the reboot.
+- [x] Accept one `True` per CPU socket (`allTrue`) instead of requiring
+      the output to be exactly `True`.
+- [ ] `gofmt`/`go vet`/`go test`/`./build.sh` on a host with Go.
+
 ## Known limitations
 
 - **Not yet run on real Windows hardware.** Written and reviewed against
@@ -257,8 +278,13 @@ To be worked through once on real hardware (or a Windows 11 VM with nested
 virtualization), with each result dated back into this doc before the
 "not yet verified" status above and in README.md is dropped:
 
-- [ ] Virtualization **disabled** in firmware: BIOS/UEFI instructions
-      appear, window stays open until Enter, nothing else is changed.
+- [ ] Virtualization **disabled** in firmware, WSL2 not yet installed:
+      BIOS/UEFI instructions appear, window stays open until Enter, nothing
+      else is changed. (In a KVM/virt-manager VM: `<feature
+      policy="disable" name="vmx"/>` — `svm` on AMD — inside the VM's
+      `<cpu mode="host-passthrough">` element, then a cold start.)
+- [ ] VM with **several CPU sockets** (virt-manager's default topology):
+      the virtualization check still passes.
 - [ ] **Non-admin account**, WSL2 missing: warning at the start, then a
       clear "an administrator must install WSL2" stop — no UAC prompt.
 - [ ] **Non-admin account**, WSL2 already installed: warning, then the rest

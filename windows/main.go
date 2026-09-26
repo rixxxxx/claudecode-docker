@@ -87,19 +87,22 @@ func main() {
 			"    elevation -- the stages after the WSL2 installation don't need admin rights.")
 	}
 
-	step("Checking virtualization firmware")
-	if !virtualizationEnabled() {
-		fail(
-			"Virtualization is disabled in your BIOS/UEFI firmware. This can't be\n" +
-				"turned on from Windows -- reboot, enter BIOS/UEFI setup (usually Del/F2\n" +
-				"during boot), enable Intel VT-x or AMD-V, save, then run this program\n" +
-				"again.",
-		)
-	}
-	ok("Virtualization is enabled")
-
 	step("Checking WSL2")
 	if !wslReady() {
+		// Checked only here, not once WSL2 is installed: from then on Windows
+		// runs on Hyper-V and the firmware check reports False even though
+		// virtualization is on, which would block the resume after the reboot.
+		step("Checking virtualization firmware")
+		if !virtualizationEnabled() {
+			fail(
+				"Virtualization is disabled in your BIOS/UEFI firmware. This can't be\n" +
+					"turned on from Windows -- reboot, enter BIOS/UEFI setup (usually Del/F2\n" +
+					"during boot), enable Intel VT-x or AMD-V, save, then run this program\n" +
+					"again.",
+			)
+		}
+		ok("Virtualization is enabled")
+
 		if !admin {
 			fail(
 				"WSL2 is not installed, and installing it needs administrator rights\n" +
@@ -271,9 +274,31 @@ func wslStream(args ...string) error {
 
 // --- stage 1: virtualization ---
 
+// Only meaningful while WSL2 isn't installed yet: once it is, Windows itself
+// runs on Hyper-V and reports VirtualizationFirmwareEnabled=False even
+// though virtualization is on -- see main() for where this is gated.
 func virtualizationEnabled() bool {
 	out, err := powershell("(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled")
-	return err == nil && strings.EqualFold(strings.TrimSpace(out), "True")
+	return err == nil && allTrue(out)
+}
+
+// allTrue reports whether PowerShell printed at least one value and every
+// one of them is True. Win32_Processor has one instance per CPU socket, so a
+// multi-socket machine (or VM -- virt-manager often defaults to one socket
+// per vCPU) prints one line per socket.
+func allTrue(out string) bool {
+	seen := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.EqualFold(line, "True") {
+			return false
+		}
+		seen = true
+	}
+	return seen
 }
 
 // --- stage 2: WSL2 ---

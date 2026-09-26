@@ -123,6 +123,27 @@ func TestLinuxUsername(t *testing.T) {
 	}
 }
 
+func TestAllTrue(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"True", true},
+		{"true", true},
+		{"True\r\nTrue", true}, // one line per CPU socket
+		{"True\r\nFalse", false},
+		{"False", false},
+		{"", false},
+		{"\r\n", false},
+		{"Get-CimInstance : Access denied", false},
+	}
+	for _, c := range cases {
+		if got := allTrue(c.in); got != c.want {
+			t.Errorf("allTrue(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestSplitURL(t *testing.T) {
 	dir, name := splitURL("https://example.org/releases/26.04/ubuntu-wsl.tar.gz")
 	if dir != "https://example.org/releases/26.04/" || name != "ubuntu-wsl.tar.gz" {
