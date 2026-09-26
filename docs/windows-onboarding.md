@@ -178,14 +178,15 @@ The hardware test itself has its own checklist further down.
 
 ### 1. Build and tests (blocked in the sandbox: no Go, `go.dev`/`proxy.golang.org` not allowlisted)
 
-- [ ] On a host with Go: `cd windows && gofmt -l . && go vet ./... && go
+- [x] On a host with Go: `cd windows && gofmt -l . && go vet ./... && go
       test ./... && ./build.sh` (or `./tests/run-tests.sh`, whose
       `test_windows_installer.sh` stops skipping once `go` is on `PATH`).
-      **The Go code has never been compiled** — only hand-reviewed; the
-      OpenPGP logic was cross-checked in Python against the real files in
-      `windows/testdata/` (2026-09-25).
-- [ ] Fix whatever that turns up, then the "not yet compiled" note in
-      "Known limitations" can go.
+      Done 2026-09-26 on the maintainer's host: gofmt/vet clean,
+      `go test ./...` passes, `./build.sh` cross-compiles the `.exe`;
+      `./tests/run-tests.sh`'s `test_windows_installer.sh` passes too
+      (no longer skipped).
+- [x] Fix whatever that turns up — nothing needed fixing (2026-09-26); the
+      "not yet compiled" note in "Known limitations" is gone.
 
 ### 2. Hardware test
 
@@ -193,7 +194,7 @@ The hardware test itself has its own checklist further down.
       The default image URL in particular hasn't been reachable from the
       sandbox — only its file name is confirmed via the signed `SHA256SUMS`.
 
-### 3. Administrator rights — implemented 2026-09-25, not yet compiled
+### 3. Administrator rights — implemented 2026-09-25, compiled and unit-tested 2026-09-26
 
 - [x] Check for admin rights first, warn on a non-admin account (see
       "Administrator rights" under "What it does").
@@ -207,7 +208,7 @@ The hardware test itself has its own checklist further down.
 - [ ] Drop the "not yet verified" status at the top of this doc and in
       README.md's Windows paragraph under "Setup".
 
-### 5. Improvements — implemented 2026-09-25, not yet compiled
+### 5. Improvements — implemented 2026-09-25, compiled and unit-tested 2026-09-26
 
 - [x] Pick the image name dynamically from the signed `SHA256SUMS`
       (`latestWSLImage` in `windows/main.go`).
@@ -217,10 +218,10 @@ The hardware test itself has its own checklist further down.
 
 ## Known limitations
 
-- **Not yet run on real Windows hardware — and not yet compiled.** Written
-  and reviewed against the documented behavior of `wsl.exe`,
-  `Get-CimInstance`, and `.wslconfig`, but never built (see "Open items"),
-  and an actual double-click run — including the
+- **Not yet run on real Windows hardware.** Written and reviewed against
+  the documented behavior of `wsl.exe`, `Get-CimInstance`, and
+  `.wslconfig`, compiled and unit-tested (2026-09-26), but an actual
+  double-click run — including the
   BIOS-disabled path and the reboot-and-resume path — still needs to happen
   on a real machine before this is trustworthy for anyone else.
 - **The default download is pinned to the 26.04 release directory**
