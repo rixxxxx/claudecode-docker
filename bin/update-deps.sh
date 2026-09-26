@@ -83,6 +83,8 @@ snapshot_versions() {
     # check (and paying the egress-proxy healthcheck wait each time) when
     # claude-code isn't already running.
     local probe out key
+    # Expanded inside the container by bash -lc, not here.
+    # shellcheck disable=SC2016
     probe='
 v="$(. /etc/os-release && echo "$VERSION_ID" 2>/dev/null)"; printf "ubuntu=%s\n" "${v:-n/a}"
 v="$(node --version 2>/dev/null)"; printf "node=%s\n" "${v:-n/a}"
@@ -320,7 +322,8 @@ echo ""
 # --- 4. apply updates ----------------------------------------------------
 
 export CLAUDE_CODE_VERSION="${NPM_LATEST:-${NPM_CURRENT:-latest}}"
-export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export BUILD_DATE
 if [ "$CACHE_SAFE" = true ]; then
     echo "==> Rebuilding claude-code image (--pull, cache-safe -- only pinned ARGs changed)..."
     docker compose build --pull

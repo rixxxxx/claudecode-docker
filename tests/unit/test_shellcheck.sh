@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs shellcheck over every shell script in the repo, if shellcheck is
 # installed. Soft-skips (exit 0, no failures) when it isn't -- shellcheck
-# isn't a hard dependency of this repo, see README "Testing".
+# isn't a hard dependency of this repo, see tests/README.md.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../lib/assert.sh"
 
 if ! command -v shellcheck >/dev/null 2>&1; then
-    echo "  SKIP shellcheck not installed -- see README \"Testing\" to install it locally."
+    echo "  SKIP shellcheck not installed -- see tests/README.md to install it locally."
     exit 0
 fi
 
@@ -20,8 +20,10 @@ SCRIPTS=(
     "$REPO_ROOT/entrypoint.sh"
     "$REPO_ROOT/proxy-auth-entrypoint.sh"
     "$REPO_ROOT/falco-notify.sh"
+    "$REPO_ROOT/stop-watcher-entrypoint.sh"
     "$REPO_ROOT/bin/cc-container"
     "$REPO_ROOT/bin/update-deps.sh"
+    "$REPO_ROOT/bin/generate-bump-ca.sh"
 )
 
 test_all_scripts_pass_shellcheck() {

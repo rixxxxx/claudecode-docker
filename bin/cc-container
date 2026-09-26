@@ -346,12 +346,14 @@ main() {
         set +a
     fi
 
-    export HOST_WORKSPACE="$(pwd -P)"
+    HOST_WORKSPACE="$(pwd -P)"
+    export HOST_WORKSPACE
 
     # Used by the optional security-monitor service (see docker-compose.yml
     # and AGENTS.md "Runtime monitoring") to bind-mount the invoking host
     # user's D-Bus session bus for desktop notifications.
-    export HOST_UID="$(id -u)"
+    HOST_UID="$(id -u)"
+    export HOST_UID
 
     # Per-workspace Squid additions: mount the target workspace's own
     # .squid-claudecode-docker/ folder into the egress-proxy alongside this
@@ -366,7 +368,8 @@ main() {
     mkdir -p "$HOST_WORKSPACE/.squid-claudecode-docker"
     export SQUID_WORKSPACE_DIR="$HOST_WORKSPACE/.squid-claudecode-docker"
 
-    export COMPOSE_PROJECT_NAME="$(derive_compose_project_name "$HOST_WORKSPACE")"
+    COMPOSE_PROJECT_NAME="$(derive_compose_project_name "$HOST_WORKSPACE")"
+    export COMPOSE_PROJECT_NAME
 
     echo "==> Workspace:       $HOST_WORKSPACE"
     echo "==> Compose project: $COMPOSE_PROJECT_NAME"

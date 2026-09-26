@@ -62,6 +62,8 @@ ensure_path_entry() {
 
     {
         printf '\n%s\n' "$MARKER_BEGIN"
+        # $PATH must stay literal in the rc file, not expanded here.
+        # shellcheck disable=SC2016
         printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
         printf '%s\n' "$MARKER_END"
     } >> "$rc_file"
