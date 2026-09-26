@@ -237,6 +237,20 @@ Found while preparing the hardware test, not observed live yet:
       the output to be exactly `True`.
 - [ ] `gofmt`/`go vet`/`go test`/`./build.sh` on a host with Go.
 
+2026-09-26, Windows 11 (build 26200) in a KVM/virt-manager VM with two
+CPU sockets, `VirtualMachinePlatform` enabled, WSL 2.7.14: the firmware
+check printed `True` twice — confirms the multi-socket case, which the old
+exact-`True` comparison would have rejected. It did *not* print `False`
+with the VM platform active, so the Hyper-V case is unconfirmed there
+(likely a nested-VM difference); still expected on bare metal, to be
+checked during the hardware test. Also seen in that VM: with virtualization
+disabled (`<feature policy='disable' name='svm'/>`) but WSL2 already
+installed, the tool now skips its own check as designed and the import
+fails with WSL's `HCS_E_HYPERV_NOT_INSTALLED` instead of the BIOS
+instructions. Caveat: `wsl --update` had been run on that VM before any of
+these tests, so WSL was already present — none of the "WSL2 missing"
+checklist items were exercised by this run.
+
 ## Known limitations
 
 - **Not yet run on real Windows hardware.** Written and reviewed against
@@ -285,6 +299,11 @@ virtualization), with each result dated back into this doc before the
       `<cpu mode="host-passthrough">` element, then a cold start.)
 - [ ] VM with **several CPU sockets** (virt-manager's default topology):
       the virtualization check still passes.
+- [ ] Only `wsl --update` run beforehand, `VirtualMachinePlatform`
+      **disabled**: does `wsl --status` already succeed there? If so, the
+      tool treats WSL2 as ready, skips `wsl --install`, and the import fails
+      with `HCS_E_HYPERV_NOT_INSTALLED` — `wslReady()` would then need to
+      check the feature too.
 - [ ] **Non-admin account**, WSL2 missing: warning at the start, then a
       clear "an administrator must install WSL2" stop — no UAC prompt.
 - [ ] **Non-admin account**, WSL2 already installed: warning, then the rest
