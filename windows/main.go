@@ -322,10 +322,53 @@ func wslReady() bool {
 
 func installWSL() error {
 	// The modern one-shot command: enables the Windows-Subsystem-for-Linux
-	// and VirtualMachinePlatform features and installs the WSL2 kernel.
+	// and VirtualMachinePlatform features and installs the WSL2 kernel --
+	// with a manual fallback when the inbox wsl.exe stub refuses it.
 	// --no-distribution: we import our own rootfs in the next stage instead
 	// of the curated Microsoft Store default.
-	return wslStream("--install", "--no-distribution")
+	err := wslStream("--install", "--no-distribution")
+	if err == nil {
+		return nil
+	}
+	// Seen live 2026-09-27 (Windows 11 build 26200 VM, after `wsl
+	// --uninstall` had removed the WSL package): the inbox wsl.exe stub
+	// rejected this with "The Windows Subsystem for Linux is not installed"
+	// and exit status 1. Fall back to Microsoft's documented manual path:
+	// enable both features via DISM, then install the WSL package itself.
+	warn("wsl --install failed (" + err.Error() + ") -- falling back to enabling\n" +
+		"    the Windows features via DISM and installing WSL via wsl --update")
+	return installWSLManually()
+}
+
+// installWSLManually enables the two Windows features WSL2 needs and
+// installs the WSL package. A reboot is still needed afterwards, which
+// main() detects via wslReady() as usual.
+func installWSLManually() error {
+	for _, feature := range []string{"Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform"} {
+		if err := enableFeature(feature); err != nil {
+			return fmt.Errorf("enabling %s: %w", feature, err)
+		}
+	}
+	if err := wslStream("--update"); err != nil {
+		return fmt.Errorf("wsl --update: %w", err)
+	}
+	return nil
+}
+
+// dismRebootRequired is DISM's exit code for "succeeded, reboot required"
+// (ERROR_SUCCESS_REBOOT_REQUIRED) -- a success here, not a failure.
+const dismRebootRequired = 3010
+
+func enableFeature(name string) error {
+	cmd := exec.Command("dism.exe", "/online", "/enable-feature", "/featurename:"+name, "/all", "/norestart")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == dismRebootRequired {
+		return nil
+	}
+	return err
 }
 
 // ensureMirroredNetworking turns on WSL2's mirrored networking mode (the

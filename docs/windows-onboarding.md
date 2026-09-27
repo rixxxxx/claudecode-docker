@@ -269,6 +269,25 @@ VM unable to start, the import fails with WSL's bare
 - [ ] Confirm the message in the VM with `svm`/`vmx` disabled and WSL2
       installed.
 
+### 8. Fallback when `wsl --install` is refused — implemented 2026-09-27, not yet compiled
+
+2026-09-27, same Windows 11 (build 26200) KVM VM, after cleaning it up
+with `wsl --unregister`, `wsl --uninstall`, both features disabled via
+`Disable-WindowsOptionalFeature`, and a reboot: the elevated `wsl --install
+--no-distribution` failed right away with the inbox stub's "The Windows
+Subsystem for Linux is not installed. You can install by running
+'wsl.exe --install'." and exit status 1. Not yet clear whether this also
+happens on a machine that never had WSL, or only after `wsl --uninstall`.
+
+- [x] `installWSL` falls back to Microsoft's manual path when `wsl
+      --install` fails: `dism.exe /enable-feature` for
+      `Microsoft-Windows-Subsystem-Linux` and `VirtualMachinePlatform`
+      (exit code 3010 = reboot required counts as success), then `wsl
+      --update` for the WSL package.
+- [ ] `gofmt`/`go vet`/`go test`/`./build.sh` on a host with Go.
+- [ ] Confirm in the same VM state: fallback runs, reboot prompt appears,
+      the re-run after the reboot continues.
+
 ## Known limitations
 
 - **Not yet run on real Windows hardware.** Written and reviewed against
