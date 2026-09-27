@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -272,6 +273,17 @@ func wslStream(args ...string) error {
 	return cmd.Run()
 }
 
+// wslStreamCapture is wslStream that also returns everything printed, for
+// callers that need to recognize a specific WSL error code afterwards.
+func wslStreamCapture(args ...string) (string, error) {
+	var buf strings.Builder
+	cmd := wslCommand(args...)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
+}
+
 // --- stage 1: virtualization ---
 
 // Only meaningful while WSL2 isn't installed yet: once it is, Windows itself
@@ -512,7 +524,32 @@ func importUbuntu() error {
 	if err != nil {
 		return err
 	}
-	return wslStream("--import", distroName, installDir, img, "--version", "2")
+	out, err := wslStreamCapture("--import", distroName, installDir, img, "--version", "2")
+	if err != nil && hyperVMissing(out) {
+		return errHyperVMissing
+	}
+	return err
+}
+
+// errHyperVMissing explains WSL's HCS_E_HYPERV_NOT_INSTALLED, which is what
+// the import fails with when wsl.exe itself works (so wslReady() is true and
+// the firmware check was skipped) but the WSL2 VM can't start: either
+// virtualization is off in the firmware, or the Virtual Machine Platform
+// feature isn't enabled -- e.g. when only `wsl --update` was ever run. Seen
+// live in a KVM VM with svm disabled, 2026-09-26.
+var errHyperVMissing = errors.New("WSL2 is installed, but its virtual machine can't start\n" +
+	"(HCS_E_HYPERV_NOT_INSTALLED). One of these is missing:\n" +
+	"  - Virtualization in your BIOS/UEFI firmware: reboot, enter BIOS/UEFI setup\n" +
+	"    (usually Del/F2 during boot), enable Intel VT-x or AMD-V, save.\n" +
+	"  - The Windows feature \"Virtual Machine Platform\": an administrator can run\n" +
+	"    `wsl --install --no-distribution`, then reboot.\n" +
+	"Then run this program again -- it will pick up right where it left off.")
+
+// hyperVMissing reports whether wsl.exe output contains
+// HCS_E_HYPERV_NOT_INSTALLED. Null bytes are stripped first, as in
+// parseDistroList, for older wsl.exe builds that ignore WSL_UTF8=1.
+func hyperVMissing(out string) bool {
+	return strings.Contains(strings.ReplaceAll(out, "\x00", ""), "HCS_E_HYPERV_NOT_INSTALLED")
 }
 
 // fetchVerifiedImage returns the path of an Ubuntu WSL image whose SHA256

@@ -251,6 +251,24 @@ instructions. Caveat: `wsl --update` had been run on that VM before any of
 these tests, so WSL was already present — none of the "WSL2 missing"
 checklist items were exercised by this run.
 
+### 7. Clear error for `HCS_E_HYPERV_NOT_INSTALLED` — implemented 2026-09-27, not yet compiled
+
+The 2026-09-26 VM run above showed that with WSL2 already present but its
+VM unable to start, the import fails with WSL's bare
+`HCS_E_HYPERV_NOT_INSTALLED`. The same is expected for the "only `wsl
+--update`, `VirtualMachinePlatform` disabled" checklist item.
+
+- [x] `importUbuntu` recognizes that error code (`hyperVMissing`) and
+      replaces it with instructions covering both causes: virtualization
+      off in the firmware, or the Virtual Machine Platform feature missing
+      (`wsl --install --no-distribution` as administrator, then reboot).
+      Chosen over a feature check in `wslReady()`, since querying Windows
+      features needs admin rights and the tool runs unelevated.
+- [ ] `gofmt`/`go vet`/`go test`/`./build.sh` on a host with Go
+      (`TestHyperVMissing` in `windows/main_test.go`).
+- [ ] Confirm the message in the VM with `svm`/`vmx` disabled and WSL2
+      installed.
+
 ## Known limitations
 
 - **Not yet run on real Windows hardware.** Written and reviewed against
@@ -302,8 +320,8 @@ virtualization), with each result dated back into this doc before the
 - [ ] Only `wsl --update` run beforehand, `VirtualMachinePlatform`
       **disabled**: does `wsl --status` already succeed there? If so, the
       tool treats WSL2 as ready, skips `wsl --install`, and the import fails
-      with `HCS_E_HYPERV_NOT_INSTALLED` — `wslReady()` would then need to
-      check the feature too.
+      with `HCS_E_HYPERV_NOT_INSTALLED` — since 2026-09-27 the tool then
+      shows the instructions from open item 7 instead of the bare error.
 - [ ] **Non-admin account**, WSL2 missing: warning at the start, then a
       clear "an administrator must install WSL2" stop — no UAC prompt.
 - [ ] **Non-admin account**, WSL2 already installed: warning, then the rest

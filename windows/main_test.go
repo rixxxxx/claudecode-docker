@@ -202,3 +202,20 @@ func TestFindLocalImage(t *testing.T) {
 		t.Error("two .wsl images not reported as ambiguous")
 	}
 }
+
+func TestHyperVMissing(t *testing.T) {
+	cases := []struct {
+		name, out string
+		want      bool
+	}{
+		{"utf-8", "Wsl/Service/RegisterDistro/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED\n", true},
+		{"utf-16 null bytes", strings.Join(strings.Split("HCS_E_HYPERV_NOT_INSTALLED", ""), "\x00"), true},
+		{"other error", "Wsl/Service/RegisterDistro/E_ACCESSDENIED\n", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		if got := hyperVMissing(c.out); got != c.want {
+			t.Errorf("%s: hyperVMissing = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
