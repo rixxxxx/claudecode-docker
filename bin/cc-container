@@ -494,6 +494,19 @@ main() {
         read -r -p "Close containers for this workspace (claude-code + egress-proxy)? [y/N] " reply
         case "$reply" in
             y|Y|yes|Yes)
+                # Started without --monitor, but security-monitor/stop-watcher
+                # may still be running from an earlier --monitor run (profile
+                # services are only touched by `down` if their profile is
+                # passed) -- ask whether to take them down too.
+                if [ "$monitor_enabled" != true ] \
+                && [ -n "$(docker compose --profile monitoring --profile auto-stop ps -q security-monitor stop-watcher 2>/dev/null)" ]; then
+                    read -r -p "security-monitor/stop-watcher are still running from an earlier --monitor run. Stop them too? [y/N] " monitor_reply
+                    case "$monitor_reply" in
+                        y|Y|yes|Yes)
+                            compose_profile_args+=(--profile monitoring --profile auto-stop)
+                            ;;
+                    esac
+                fi
                 echo "==> Stopping and removing containers..."
                 docker compose "${compose_profile_args[@]}" down
                 ;;
