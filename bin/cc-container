@@ -355,6 +355,18 @@ main() {
     HOST_UID="$(id -u)"
     export HOST_UID
 
+    # Only hand the host's D-Bus session socket to security-monitor if it
+    # actually exists right now; docker-compose.yml falls back to a tracked
+    # empty file otherwise, so Docker never creates anything under
+    # /run/user/<uid> itself (see the comment there).
+    if [ -S "/run/user/$HOST_UID/bus" ]; then
+        export DBUS_SOCKET_PATH="/run/user/$HOST_UID/bus"
+    else
+        unset DBUS_SOCKET_PATH
+        echo "Warning: no D-Bus session socket at /run/user/$HOST_UID/bus --" >&2
+        echo "         --monitor desktop notifications will be disabled (alerts still logged)." >&2
+    fi
+
     # Per-workspace Squid additions: mount the target workspace's own
     # .squid-claudecode-docker/ folder into the egress-proxy alongside this
     # repo's defaults. Create it here (as the invoking host user) if it

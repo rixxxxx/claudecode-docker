@@ -40,6 +40,10 @@ services:
       HTTPS_PROXY: http://egress-proxy:3128
       NO_PROXY: localhost,127.0.0.1
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      # Default model for new sessions; override via CLAUDE_MODEL in .env.
+      # settings.json is read-only inside the container (see Dockerfile), so
+      # /model's saved default can't persist there -- an env var does.
+      ANTHROPIC_MODEL: ${CLAUDE_MODEL:-sonnet}
     networks:
       - internal
     # Forces dockerd to resolve claude-code's upstream (non-local) DNS
@@ -246,7 +250,23 @@ services:
       # -u) of the invoking host user) -- falls back to 1000 (this repo's
       # own default, non-root UID convention, see Dockerfile) if unset,
       # e.g. when invoking docker compose directly.
-      - /run/user/${HOST_UID:-1000}/bus:/run/user/${HOST_UID:-1000}/bus
+      #
+      # Long syntax with create_host_path: false is load-bearing, never
+      # revert to the short "src:dst" form: with it Docker creates a
+      # missing source as a root-owned DIRECTORY, and if that happens
+      # inside a freshly mounted /run/user/<uid> (security-monitor's
+      # restart: unless-stopped racing the user's login at boot) systemd
+      # can no longer bind the user's own dbus.socket there -- "Address
+      # already in use", every graphical login fails (confirmed
+      # 2026-10-06, see AGENTS.md "Runtime monitoring").
+      # DBUS_SOCKET_PATH is set by bin/cc-container to the real socket when
+      # it exists; otherwise it falls back to a tracked empty file
+      # (desktop notifications then just don't work, Falco keeps logging).
+      - type: bind
+        source: ${DBUS_SOCKET_PATH:-./.squid-empty-secret}
+        target: /run/user/${HOST_UID:-1000}/bus
+        bind:
+          create_host_path: false
       # Shared with stop-watcher (see that service below): falco-notify.sh
       # keeps one counter file per offending container id here and writes
       # a trigger.<container_id> file once SECURITY_MONITOR_STOP_THRESHOLD

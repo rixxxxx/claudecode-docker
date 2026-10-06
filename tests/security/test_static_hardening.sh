@@ -81,6 +81,19 @@ test_only_stop_watcher_has_docker_socket() {
     assert_contains "$RESOLVED_CONFIG" "docker.sock"
 }
 
+test_dbus_socket_mount_never_autocreates_host_path() {
+    # Regression guard (2026-10-06): the short "/run/user/UID/bus:..." form
+    # makes Docker create a missing source as a root-owned directory, which
+    # raced the user's login at boot and broke systemd's own dbus.socket
+    # there. Must stay long syntax with create_host_path: false.
+    local compose
+    compose="$(cat "$REPO_ROOT/docker-compose.yml")"
+    CURRENT_TEST="no short-form /run/user bind mount"
+    assert_not_contains "$compose" "- /run/user/"
+    CURRENT_TEST="D-Bus bind mount sets create_host_path: false"
+    assert_contains "$compose" "create_host_path: false"
+}
+
 test_dockerfiles_dont_copy_full_build_context() {
     # A "COPY . ." (or "ADD . .") would pull the entire build context into
     # an image layer regardless of intent -- this repo relies on targeted
@@ -119,6 +132,7 @@ run_test test_no_service_adds_capabilities
 run_test test_only_security_monitor_has_capabilities
 run_test test_no_service_mounts_docker_socket
 run_test test_only_stop_watcher_has_docker_socket
+run_test test_dbus_socket_mount_never_autocreates_host_path
 run_test test_dockerfiles_dont_copy_full_build_context
 run_test test_dockerfiles_dont_leak_proxy_credentials_via_build_args
 

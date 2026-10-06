@@ -296,6 +296,25 @@ touching this code:
     `HOST_UID` in `security-monitor`'s `environment:` (separate from its
     existing use in the D-Bus socket *path*) and `util-linux` installed in
     `Dockerfile.security-monitor` (for `setpriv`).
+  - **D-Bus socket mount must never auto-create its source** (root-caused
+    2026-10-06 from a real boot journal + `.xsession-errors`): with the
+    short `-v src:dst` form, Docker creates a missing source as a
+    root-owned *directory*. `security-monitor` has `restart: unless-stopped`,
+    so Docker restarts it at boot, racing the user's graphical login; when
+    the login's fresh `/run/user/<uid>` tmpfs won, Docker then created
+    `bus/` inside it, systemd failed with `dbus.socket: Address already in
+    use`, and Xfce died with `Failed to connect to socket
+    /run/user/1000/bus: Permission denied` (several failed logins until
+    `user@1000` was torn down and `/run/user/1000` recreated). Now the long
+    syntax with `create_host_path: false`, source `${DBUS_SOCKET_PATH}`
+    set by `bin/cc-container` only if `[ -S /run/user/$UID/bus ]`, else a
+    tracked empty placeholder (`.squid-empty-secret`) -- notifications off
+    with a warning, Falco logging and the rest of `--monitor` unaffected
+    (also keeps WSL-without-systemd/Docker Desktop working). Guarded by
+    `test_dbus_socket_mount_never_autocreates_host_path`. Known, unchanged
+    limitation: the file bind-mount pins the socket from container start,
+    so popups stop after a logout/login until `security-monitor` is
+    recreated.
   - No external service, no network egress needed for any of this —
     `security-monitor` runs with `network_mode: none`. Desktop
     notifications only work with an active graphical Linux session (D-Bus
