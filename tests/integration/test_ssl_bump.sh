@@ -194,6 +194,68 @@ test_algolia_non_query_path_blocked() {
     assert_contains "$body" "squid"
 }
 
+test_github_read_only() {
+    # .squid-sslbump-enabled/20-search-only.conf's github_dom block: reads
+    # (incl. the POST-based git-upload-pack fetch) pass, push and API/gist
+    # writes are denied by Squid itself. Compares against Squid's own error
+    # page ("squid" in its footer) like the Algolia tests above, so an
+    # upstream 4xx from GitHub (e.g. unauthenticated POST) isn't mistaken
+    # for a proxy block.
+    local body
+    CURRENT_TEST="github: info/refs?service=git-upload-pack reachable"
+    assert_success "${COMPOSE[@]}" exec -T claude-code \
+        curl -fsS --max-time 10 -o /dev/null \
+        "https://github.com/octocat/Hello-World.git/info/refs?service=git-upload-pack"
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 \
+        "https://github.com/octocat/Hello-World.git/info/refs?service=git-receive-pack" 2>&1)"
+    CURRENT_TEST="github: info/refs?service=git-receive-pack blocked by Squid"
+    assert_contains "$body" "squid"
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 -X POST \
+        "https://github.com/octocat/Hello-World.git/git-receive-pack" 2>&1)"
+    CURRENT_TEST="github: POST git-receive-pack blocked by Squid"
+    assert_contains "$body" "squid"
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 -X POST \
+        -d '{}' "https://api.github.com/gists" 2>&1)"
+    CURRENT_TEST="github: POST api.github.com/gists blocked by Squid"
+    assert_contains "$body" "squid"
+}
+
+test_github_clone_works() {
+    # End-to-end proof for the one allow rule test_github_read_only above
+    # doesn't touch: a real clone does POST .../git-upload-pack, which the
+    # github_dom block allows explicitly (read despite the method). Without
+    # that rule this fails, since the generic allow is GET/HEAD only. Shallow
+    # to keep it small; needs outbound access to github.com like the rest of
+    # this suite. Cleans up its temp dir either way.
+    CURRENT_TEST="github: git clone (POST git-upload-pack) works through the bump"
+    assert_success "${COMPOSE[@]}" exec -T claude-code bash -c \
+        'd="$(mktemp -d)"; trap "rm -rf \"$d\"" EXIT; git clone --depth 1 -q https://github.com/octocat/Hello-World.git "$d/hw"'
+}
+
+test_gcs_restricted_to_anthropic_bucket() {
+    local body
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 \
+        "https://storage.googleapis.com/some-other-bucket/x" 2>&1)"
+    CURRENT_TEST="gcs: foreign bucket blocked by Squid"
+    assert_contains "$body" "squid"
+    # Positive path of the gcs_anthropic rule. Uses a SHORT path under the
+    # bucket (/<bucket>/x = 56 chars) on purpose: the real
+    # plugin-stats/plugin-details.json path is a 60+ char
+    # [A-Za-z0-9+/_-] run, which 10-bump.conf's exfil_suspicious_url denies
+    # BEFORE 20-search-only.conf is reached (live run 2026-10-07), so it
+    # can't exercise this rule. Google itself answers (404/403 XML), not Squid.
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 \
+        "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/x" 2>&1)"
+    CURRENT_TEST="gcs: Anthropic bucket short path reaches GCS, not blocked by Squid"
+    assert_not_contains "$body" "squid"
+    # Pins the interaction described above, so a change to either rule's
+    # ordering or the 60-char threshold shows up here instead of silently.
+    body="$("${COMPOSE[@]}" exec -T claude-code curl -sS --max-time 10 \
+        "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/plugin-stats/plugin-details.json" 2>&1)"
+    CURRENT_TEST="gcs: real plugin-stats path still denied by exfil_suspicious_url"
+    assert_contains "$body" "squid"
+}
+
 run_test test_bumped_domain_still_reachable
 run_test test_bumped_connection_uses_generated_ca
 run_test test_non_allowlisted_domain_still_blocked
@@ -201,5 +263,8 @@ run_test test_suspicious_url_pattern_blocked
 run_test test_search_only_domains_restricted
 run_test test_algolia_query_path_reachable
 run_test test_algolia_non_query_path_blocked
+run_test test_github_read_only
+run_test test_github_clone_works
+run_test test_gcs_restricted_to_anthropic_bucket
 
 print_summary

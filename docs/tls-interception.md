@@ -79,6 +79,18 @@ third-party search backend for
 react.dev/vuejs.org/angular.dev/kubernetes.io) are separately allowlisted
 and restricted to just the query API path.
 
+Two write-capable domains are restricted by method/path instead of search
+(2026-10-07): GitHub (`.github.com`, `.githubusercontent.com`) is
+read-only — clone/fetch (incl. the POST-based `git-upload-pack`), raw files
+and GET API calls work, while `git push` (`git-receive-pack`), gist/repo
+creation and any other non-GET/HEAD request are denied, so push from the
+host. Git LFS is blocked as a side effect (downloads use the same POST
+endpoint as uploads). `storage.googleapis.com` is limited to Claude Code's
+own distribution bucket, GET/HEAD only. In practice that bucket's path
+also trips the long-token `exfil_suspicious_url` rule, so the domain is
+effectively blocked under `--ssl-bump`; nothing needs it with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+
 **Limitations (see
 [falco/claude-code-rules.yaml](../falco/claude-code-rules.yaml)'s OPEN
 ITEMS "Third pass" and this feature's own commit for open items):**
